@@ -1,0 +1,19 @@
+[package]
+name = "reflex"
+version = "1.0.0"
+edition = "2024"
+authors = ["Tushar Sharma <Txshar@proton.me>"]
+description = "Instant PC runtime for Windows. Command palette, file search, clipboard history, app launcher. GPU-rendered, sub-3ms."
+repository = "https://github.com/TxsharDev/Reflex"
+license = "MIT"
+readme = "README.md"
+keywords = ["launcher", "command-palette", "productivity", "windows", "search"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+
+[profile.release]
+strip = true
+lto = true
+opt-level = 2
+codegen-units = 1
