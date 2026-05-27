@@ -1,3 +1,334 @@
-fn main() {
-    println!("Hello, world!");
+//! Reflex - faster than thinking.
+//!
+//! Instant PC runtime for Windows. Alt+Space opens the command palette.
+//! Search files, launch apps, clipboard history, calculator, system actions.
+
+#![windows_subsystem = "windows"]
+#![allow(dead_code)]
+
+mod actions;
+mod clipboard;
+mod config;
+mod platform;
+mod search;
+mod ui;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::path::PathBuf;
+
+use eframe::egui;
+
+use actions::{calculator, system};
+use clipboard::ClipboardHistory;
+use config::Config;
+use platform::AppEntry;
+use search::index::FileIndex;
+use search::ranker::{SearchResult, ResultKind, ResultAction, rank_results};
+use ui::palette::PaletteState;
+
+const PALETTE_WIDTH: f32 = 660.0;
+
+struct ReflexApp {
+    palette: PaletteState,
+    hotkey_triggered: Arc<AtomicBool>,
+    apps: Vec<AppEntry>,
+    file_index: FileIndex,
+    clipboard: ClipboardHistory,
+    config: Config,
+    last_query: String,
+    last_filter: ui::palette::Filter,
+}
+
+impl ReflexApp {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        ui::theme::apply(&cc.egui_ctx);
+
+        let config = Config::load();
+        let hotkey_triggered = Arc::new(AtomicBool::new(false));
+        platform::register_hotkey(hotkey_triggered.clone());
+
+        let apps = platform::discover_apps();
+
+        let file_index = FileIndex::new();
+        let index_dirs = vec![
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users")),
+        ];
+        file_index.start_indexing(index_dirs);
+
+        let clipboard_hist = ClipboardHistory::new();
+        clipboard_hist.start_watching();
+
+        let mut palette = PaletteState::new();
+        palette.show();
+
+        #[cfg(target_os = "windows")]
+        platform::apply_rounded_corners();
+
+        Self {
+            palette,
+            hotkey_triggered,
+            apps,
+            file_index,
+            clipboard: clipboard_hist,
+            config,
+            last_query: String::new(),
+            last_filter: ui::palette::Filter::All,
+        }
+    }
+
+    fn do_search(&mut self) {
+        let query = self.palette.query.trim().to_string();
+        let filter = self.palette.filter;
+
+        // Re-search if query or filter changed
+        if query == self.last_query && filter == self.last_filter { return; }
+        self.last_query = query.clone();
+        self.last_filter = filter;
+
+        let mut results: Vec<SearchResult> = Vec::new();
+        let q_lower = query.to_lowercase();
+
+        // Empty query - show recent/top apps
+        if query.is_empty() {
+            // Show top apps as suggestions
+            for app in self.apps.iter().take(6) {
+                results.push(SearchResult {
+                    title: app.name.clone(),
+                    subtitle: app.path.to_string_lossy().to_string(),
+                    kind: ResultKind::App,
+                    score: 3000 + app.launch_count * 100,
+                    action: ResultAction::Launch(app.path.clone()),
+                });
+            }
+
+            // Always include clipboard entries
+            for clip in self.clipboard.entries().into_iter().take(8) {
+                let preview: String = clip.text.chars().take(80).collect();
+                results.push(SearchResult {
+                    title: preview,
+                    subtitle: "Clipboard".to_string(),
+                    kind: ResultKind::Clipboard,
+                    score: 1500,
+                    action: ResultAction::PasteClip(clip.text),
+                });
+            }
+
+            rank_results(&mut results);
+            self.palette.results = results;
+            self.palette.selected = 0;
+            return;
+        }
+
+        // Calculator
+        if let Some(calc_result) = calculator::evaluate(&query) {
+            results.push(SearchResult {
+                title: calc_result.clone(),
+                subtitle: query.clone(),
+                kind: ResultKind::Calculator,
+                score: 10000,
+                action: ResultAction::CopyResult(calc_result.trim_start_matches("= ").to_string()),
+            });
+        }
+
+        // System actions
+        results.extend(system::search_actions(&query));
+
+        // Apps
+        for app in &self.apps {
+            let name_lower = app.name.to_lowercase();
+            if name_lower.contains(&q_lower) || fuzzy_contains(&name_lower, &q_lower) {
+                let score = if name_lower.starts_with(&q_lower) { 4000 }
+                    else if name_lower.contains(&q_lower) { 3000 }
+                    else { 2000 };
+
+                results.push(SearchResult {
+                    title: app.name.clone(),
+                    subtitle: app.path.to_string_lossy().to_string(),
+                    kind: ResultKind::App,
+                    score: score + app.launch_count * 100,
+                    action: ResultAction::Launch(app.path.clone()),
+                });
+            }
+        }
+
+        // Clipboard
+        let clips = self.clipboard.search(&query, 5);
+        for clip in clips {
+            let preview: String = clip.text.chars().take(80).collect();
+            results.push(SearchResult {
+                title: preview,
+                subtitle: "Clipboard".to_string(),
+                kind: ResultKind::Clipboard,
+                score: 1500,
+                action: ResultAction::PasteClip(clip.text),
+            });
+        }
+
+        // Files (2+ chars)
+        if query.len() >= 2 {
+            let file_results = self.file_index.search(&query, 8);
+            for file in file_results {
+                let kind = if file.is_dir { ResultKind::Folder } else { ResultKind::File };
+                let action = if file.is_dir {
+                    ResultAction::OpenFolder(file.path.clone())
+                } else {
+                    ResultAction::OpenFile(file.path.clone())
+                };
+
+                results.push(SearchResult {
+                    title: file.name,
+                    subtitle: file.path.parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    kind,
+                    score: 500,
+                    action,
+                });
+            }
+        }
+
+        rank_results(&mut results);
+        results.truncate(self.config.max_results);
+        self.palette.results = results;
+        self.palette.selected = 0;
+    }
+
+    fn execute_action(&mut self, action: ResultAction, ctrl: bool) {
+        match action {
+            ResultAction::Launch(ref path) => {
+                platform::launch_app(path, ctrl); // ctrl = run as admin
+            }
+            ResultAction::OpenFile(ref path) => {
+                if ctrl {
+                    // Ctrl+Enter on file = open containing folder
+                    if let Some(parent) = path.parent() {
+                        let _ = open::that(parent);
+                    }
+                } else {
+                    let _ = open::that(path);
+                }
+            }
+            ResultAction::OpenFolder(ref path) => {
+                let _ = open::that(path);
+            }
+            ResultAction::PasteClip(ref text) => {
+                self.clipboard.paste(text);
+            }
+            ResultAction::CopyResult(ref text) => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(text);
+                }
+            }
+            ResultAction::SystemAction(ref action_name) => {
+                match action_name.as_str() {
+                    "ip" => {
+                        let ip = platform::get_ip();
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(&ip);
+                        }
+                    }
+                    "terminal" => {
+                        let _ = std::process::Command::new("wt.exe").spawn()
+                            .or_else(|_| std::process::Command::new("cmd.exe").spawn());
+                    }
+                    "screenshot" => {
+                        let _ = std::process::Command::new("snippingtool.exe").spawn();
+                    }
+                    other => {
+                        let _ = platform::system_action(other);
+                    }
+                }
+            }
+        }
+        self.palette.hide();
+    }
+
+    fn show_palette(&mut self, ctx: &egui::Context) {
+        self.palette.show();
+        self.last_query = String::new();
+        let h = self.palette.ideal_height();
+        // Get screen size and center
+        let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
+        let x = (monitor.x - PALETTE_WIDTH) / 2.0;
+        let y = monitor.y * 0.18;
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, h)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    fn hide_palette(&mut self, ctx: &egui::Context) {
+        self.palette.hide();
+        // Move offscreen and shrink - keeps event loop alive unlike Minimized/Visible
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(0.0, 0.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-100.0, -100.0)));
+    }
+}
+
+impl eframe::App for ReflexApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.hotkey_triggered.swap(false, Ordering::SeqCst) {
+            if self.palette.visible {
+                self.hide_palette(ctx);
+            } else {
+                self.show_palette(ctx);
+            }
+        }
+
+        ctx.request_repaint_after(Duration::from_millis(50));
+
+        if !self.palette.visible {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(ui::theme::BG))
+                .show(ctx, |_ui| {});
+            return;
+        }
+
+        self.do_search();
+
+        let ideal_h = self.palette.ideal_height();
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, ideal_h)));
+
+        // Check for Ctrl held (for Ctrl+Enter)
+        let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+
+        let file_count = self.file_index.count();
+        let indexing = self.file_index.is_indexing();
+
+        if let Some(action) = ui::palette::draw(ctx, &mut self.palette, ctrl_held, file_count, indexing) {
+            self.execute_action(action, ctrl_held);
+            self.hide_palette(ctx);
+        }
+    }
+}
+
+fn fuzzy_contains(text: &str, pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    let mut current = chars.next();
+    for c in text.chars() {
+        if current == Some(c) {
+            current = chars.next();
+            if current.is_none() { return true; }
+        }
+    }
+    false
+}
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([PALETTE_WIDTH, 80.0])
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_title("Reflex"),
+        centered: true,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Reflex",
+        options,
+        Box::new(|cc| Ok(Box::new(ReflexApp::new(cc)))),
+    )
 }
