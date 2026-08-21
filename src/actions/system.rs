@@ -13,6 +13,7 @@ pub fn all_actions() -> Vec<SystemAction> {
         SystemAction { name: "IP Address", keywords: "ip address network", action: "ip" },
         SystemAction { name: "Open Terminal", keywords: "terminal cmd powershell console", action: "terminal" },
         SystemAction { name: "Screenshot", keywords: "screenshot snip capture screen", action: "screenshot" },
+        SystemAction { name: "Quit Reflex", keywords: "quit exit close stop", action: "quit" },
     ]
 }
 

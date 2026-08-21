@@ -152,15 +152,26 @@ fn try_hex_conversion(input: &str) -> Option<String> {
 
 fn try_unit_conversion(input: &str) -> Option<String> {
     let lower = input.to_lowercase();
-    let parts: Vec<&str> = lower.split(' ').collect();
+    let parts: Vec<&str> = lower.split_whitespace().collect();
 
-    // Pattern: "VALUE UNIT to/in UNIT"
-    if parts.len() < 4 { return None; }
-    let val: f64 = parts[0].parse().ok()?;
-    let from = parts[1];
-    // parts[2] should be "to" or "in"
-    if parts[2] != "to" && parts[2] != "in" { return None; }
-    let to = parts[3];
+    // Pattern: "VALUE UNIT to/in UNIT" or "VALUEUNIT to/in UNIT"
+    let (val, from, to) = if parts.len() >= 4 {
+        let v: f64 = parts[0].parse().ok()?;
+        (v, parts[1], parts[3])
+    } else if parts.len() == 3 {
+        // Glued: "212f to c" -> split first token into number + unit
+        let first = parts[0];
+        let split_at = first.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(first.len());
+        if split_at == 0 || split_at == first.len() { return None; }
+        let v: f64 = first[..split_at].parse().ok()?;
+        (v, &first[split_at..], parts[2])
+    } else {
+        return None;
+    };
+
+    // Middle token should be "to" or "in"
+    let connector = if parts.len() >= 4 { parts[2] } else { parts[1] };
+    if connector != "to" && connector != "in" { return None; }
 
     // Temperature
     match (from, to) {
@@ -238,4 +249,74 @@ fn try_unit_conversion(input: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_addition() {
+        assert_eq!(evaluate("2 + 3"), Some("= 5".to_string()));
+    }
+
+    #[test]
+    fn test_multiplication_precedence() {
+        assert_eq!(evaluate("2 + 3 * 4"), Some("= 14".to_string()));
+    }
+
+    #[test]
+    fn test_parentheses() {
+        assert_eq!(evaluate("(2 + 3) * 4"), Some("= 20".to_string()));
+    }
+
+    #[test]
+    fn test_power() {
+        assert_eq!(evaluate("2 ^ 10"), Some("= 1024".to_string()));
+    }
+
+    #[test]
+    fn test_division() {
+        assert_eq!(evaluate("10 / 4"), Some("= 2.5".to_string()));
+    }
+
+    #[test]
+    fn test_negative_result() {
+        assert_eq!(evaluate("3 - 10"), Some("= -7".to_string()));
+    }
+
+    #[test]
+    fn test_hex_to_decimal() {
+        assert_eq!(evaluate("0xFF"), Some("= 255 (decimal)".to_string()));
+    }
+
+    #[test]
+    fn test_decimal_to_hex() {
+        assert_eq!(evaluate("255 in hex"), Some("= 0xFF".to_string()));
+    }
+
+    #[test]
+    fn test_binary_to_decimal() {
+        assert_eq!(evaluate("0b1111"), Some("= 15 (decimal)".to_string()));
+    }
+
+    #[test]
+    fn test_fahrenheit_to_celsius() {
+        assert_eq!(evaluate("212f to c"), Some("= 100.0C".to_string()));
+    }
+
+    #[test]
+    fn test_gb_to_mb() {
+        assert_eq!(evaluate("2gb in mb"), Some("= 2048.00 MB".to_string()));
+    }
+
+    #[test]
+    fn test_not_math_returns_none() {
+        assert_eq!(evaluate("hello"), None);
+    }
+
+    #[test]
+    fn test_plain_number_returns_none() {
+        assert_eq!(evaluate("42"), None);
+    }
 }

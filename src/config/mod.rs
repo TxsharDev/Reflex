@@ -19,9 +19,14 @@ fn default_max_results() -> usize { 12 }
 fn default_theme() -> String { "dark".into() }
 
 fn default_index_dirs() -> Vec<String> {
-    // Index common user directories + drive roots
+    // Index user subdirs (deep) + drive roots (shallow)
     let mut dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
+        for sub in ["Desktop", "Documents", "Downloads", "Projects", "dev", "code", "repos", "src"] {
+            let p = home.join(sub);
+            if p.exists() { dirs.push(p.to_string_lossy().to_string()); }
+        }
+        // Home itself as a catch-all
         dirs.push(home.to_string_lossy().to_string());
     }
     // Add drive roots that exist
@@ -42,6 +47,14 @@ impl Default for Config {
             theme: default_theme(),
         }
     }
+}
+
+/// Path to the launch counts JSON file.
+pub fn launch_counts_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("reflex")
+        .join("launch_counts.json")
 }
 
 impl Config {

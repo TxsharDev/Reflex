@@ -41,11 +41,12 @@ pub struct PaletteState {
     pub selected: usize,
     pub visible: bool,
     pub filter: Filter,
+    pub alpha: f32,
 }
 
 impl PaletteState {
     pub fn new() -> Self {
-        Self { query: String::new(), results: Vec::new(), selected: 0, visible: false, filter: Filter::All }
+        Self { query: String::new(), results: Vec::new(), selected: 0, visible: false, filter: Filter::All, alpha: 0.0 }
     }
 
     pub fn show(&mut self) {
@@ -61,6 +62,17 @@ impl PaletteState {
         self.query.clear();
         self.results.clear();
         self.selected = 0;
+    }
+
+    /// Animate alpha toward 1.0 (visible) or 0.0 (hidden). ~120ms fade.
+    pub fn tick_alpha(&mut self) {
+        let target = if self.visible { 1.0 } else { 0.0 };
+        let speed = 0.15; // ~7 frames at 30ms = ~200ms total
+        if self.alpha < target {
+            self.alpha = (self.alpha + speed).min(target);
+        } else if self.alpha > target {
+            self.alpha = (self.alpha - speed).max(target);
+        }
     }
 
     pub fn move_up(&mut self) {
@@ -101,21 +113,26 @@ impl PaletteState {
 }
 
 pub fn draw(ctx: &egui::Context, state: &mut PaletteState, _ctrl_held: bool, file_count: usize, indexing: bool) -> Option<ResultAction> {
-    if !state.visible { return None; }
+    if !state.visible && state.alpha < 0.01 { return None; }
 
+    let alpha = state.alpha;
     let mut executed_action = None;
+
+    // Apply fade: multiply all colors by alpha
+    let bg = with_alpha(theme::BG, alpha);
+    let border = with_alpha(theme::BORDER, alpha);
 
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
-                .fill(theme::BG)
+                .fill(bg)
                 .corner_radius(egui::CornerRadius::same(16))
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .stroke(egui::Stroke::new(1.0, border))
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 8],
                     blur: 32,
                     spread: 4,
-                    color: egui::Color32::from_black_alpha(80),
+                    color: egui::Color32::from_black_alpha((80.0 * alpha) as u8),
                 })
         )
         .show(ctx, |ui| {
@@ -368,4 +385,10 @@ impl<'a> egui::Widget for ResultRow<'a> {
 
         response
     }
+}
+
+/// Multiply a color's alpha channel by a factor (for fade in/out).
+fn with_alpha(color: egui::Color32, factor: f32) -> egui::Color32 {
+    let [r, g, b, a] = color.to_array();
+    egui::Color32::from_rgba_premultiplied(r, g, b, (a as f32 * factor) as u8)
 }

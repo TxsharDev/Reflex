@@ -34,8 +34,9 @@ impl FileIndex {
         }
     }
 
-    /// Index in two phases: user dirs first (fast), then all drives.
-    pub fn start_indexing(&self, _dirs: Vec<PathBuf>) {
+    /// Index in two phases: user dirs first (fast), then remaining drive roots.
+    /// The `dirs` parameter specifies which directories to index (from config).
+    pub fn start_indexing(&self, dirs: Vec<PathBuf>) {
         let entries = self.entries.clone();
         let indexing = self.indexing.clone();
         let count = self.count.clone();
@@ -43,13 +44,22 @@ impl FileIndex {
         indexing.store(true, Ordering::SeqCst);
 
         std::thread::spawn(move || {
-            let start = Instant::now();
+            let _start = Instant::now();
             let mut all = Vec::with_capacity(200_000);
 
-            // Phase 1: User directories (fast)
-            let priority_dirs = get_priority_dirs();
-            for dir in &priority_dirs {
-                walk_dir(dir, &mut all, 0, 10); // Max depth 10 for user dirs
+            // Separate user-level dirs (deep) from drive roots (shallow)
+            let drive_roots: Vec<&PathBuf> = dirs.iter().filter(|d| d.as_path().to_string_lossy().len() <= 3).collect();
+            let user_dirs: Vec<&PathBuf> = dirs.iter().filter(|d| d.as_path().to_string_lossy().len() > 3).collect();
+
+            // Phase 1: User directories first (fast, deep)
+            for dir in &user_dirs {
+                walk_dir(dir, &mut all, 0, 10);
+            }
+            if user_dirs.is_empty() {
+                // Fallback: index home dir
+                if let Some(home) = dirs::home_dir() {
+                    walk_dir(&home, &mut all, 0, 8);
+                }
             }
 
             // Commit phase 1 results immediately
@@ -60,13 +70,12 @@ impl FileIndex {
             }
             count.store(phase1_count, Ordering::SeqCst);
 
-            // Phase 2: All drive roots (skip already-indexed user dirs)
-            let drive_roots = get_drive_roots();
+            // Phase 2: Drive roots (shallow, covers everything else)
             for root in &drive_roots {
-                if priority_dirs.iter().any(|p| root.starts_with(p) || p.starts_with(root)) {
-                    continue; // Already indexed
+                let already_covered = user_dirs.iter().any(|p| root.starts_with(p) || p.starts_with(root));
+                if !already_covered {
+                    walk_dir(root, &mut all, 0, 6);
                 }
-                walk_dir(root, &mut all, 0, 6); // Shallower for drive roots
             }
 
             all.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
@@ -76,8 +85,6 @@ impl FileIndex {
             }
             count.store(total, Ordering::SeqCst);
             indexing.store(false, Ordering::SeqCst);
-
-            let _ = start; // Suppress unused warning in release
         });
     }
 
@@ -108,33 +115,7 @@ impl FileIndex {
     }
 }
 
-/// Priority directories - indexed first, deeper.
-fn get_priority_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
-        // Desktop, Documents, Downloads, Projects
-        for sub in ["Desktop", "Documents", "Downloads", "Projects", "dev", "code", "repos", "src"] {
-            let p = home.join(sub);
-            if p.exists() { dirs.push(p); }
-        }
-        dirs.push(home); // Home itself (shallow)
-    }
-
-    dirs
-}
-
-/// All drive roots that exist.
-fn get_drive_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for letter in b'A'..=b'Z' {
-        let drive = PathBuf::from(format!("{}:\\", letter as char));
-        if drive.exists() {
-            roots.push(drive);
-        }
-    }
-    roots
-}
 
 // Directories to always skip
 const SKIP_DIRS: &[&str] = &[

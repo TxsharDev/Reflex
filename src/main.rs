@@ -4,7 +4,6 @@
 //! Search files, launch apps, clipboard history, calculator, system actions.
 
 #![windows_subsystem = "windows"]
-#![allow(dead_code)]
 
 mod actions;
 mod clipboard;
@@ -13,8 +12,9 @@ mod platform;
 mod search;
 mod ui;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::path::PathBuf;
 
@@ -24,6 +24,7 @@ use actions::{calculator, system};
 use clipboard::ClipboardHistory;
 use config::Config;
 use platform::AppEntry;
+use search::fuzzy::FuzzyMatcher;
 use search::index::FileIndex;
 use search::ranker::{SearchResult, ResultKind, ResultAction, rank_results};
 use ui::palette::PaletteState;
@@ -39,6 +40,8 @@ struct ReflexApp {
     config: Config,
     last_query: String,
     last_filter: ui::palette::Filter,
+    fuzzy: FuzzyMatcher,
+    launch_counts: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl ReflexApp {
@@ -49,12 +52,20 @@ impl ReflexApp {
         let hotkey_triggered = Arc::new(AtomicBool::new(false));
         platform::register_hotkey(hotkey_triggered.clone());
 
-        let apps = platform::discover_apps();
+        let launch_counts = Arc::new(Mutex::new(Self::load_launch_counts()));
+        let mut apps = platform::discover_apps();
+        // Apply persisted launch counts
+        {
+            let counts = launch_counts.lock().unwrap();
+            for app in &mut apps {
+                if let Some(&c) = counts.get(&app.name.to_lowercase()) {
+                    app.launch_count = c;
+                }
+            }
+        }
 
         let file_index = FileIndex::new();
-        let index_dirs = vec![
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users")),
-        ];
+        let index_dirs: Vec<PathBuf> = config.index_dirs.iter().map(|s| PathBuf::from(s)).collect();
         file_index.start_indexing(index_dirs);
 
         let clipboard_hist = ClipboardHistory::new();
@@ -75,7 +86,32 @@ impl ReflexApp {
             config,
             last_query: String::new(),
             last_filter: ui::palette::Filter::All,
+            fuzzy: FuzzyMatcher::new(),
+            launch_counts,
         }
+    }
+
+    fn load_launch_counts() -> HashMap<String, u32> {
+        let path = config::launch_counts_path();
+        match std::fs::read_to_string(path) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    fn save_launch_count(&self, app_name: &str) {
+        let mut counts = self.launch_counts.lock().unwrap();
+        let key = app_name.to_lowercase();
+        let entry = counts.entry(key).or_insert(0);
+        *entry += 1;
+        let path = config::launch_counts_path();
+        if let Ok(json) = serde_json::to_string(&*counts) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, json);
+        }
+        drop(counts);
     }
 
     fn do_search(&mut self) {
@@ -92,7 +128,6 @@ impl ReflexApp {
 
         // Empty query - show recent/top apps
         if query.is_empty() {
-            // Show top apps as suggestions
             for app in self.apps.iter().take(6) {
                 results.push(SearchResult {
                     title: app.name.clone(),
@@ -103,7 +138,6 @@ impl ReflexApp {
                 });
             }
 
-            // Always include clipboard entries
             for clip in self.clipboard.entries().into_iter().take(8) {
                 let preview: String = clip.text.chars().take(80).collect();
                 results.push(SearchResult {
@@ -135,19 +169,25 @@ impl ReflexApp {
         // System actions
         results.extend(system::search_actions(&query));
 
-        // Apps
+        // Apps (using nucleo fuzzy matching)
         for app in &self.apps {
             let name_lower = app.name.to_lowercase();
-            if name_lower.contains(&q_lower) || fuzzy_contains(&name_lower, &q_lower) {
-                let score = if name_lower.starts_with(&q_lower) { 4000 }
-                    else if name_lower.contains(&q_lower) { 3000 }
-                    else { 2000 };
+            let score = if name_lower.starts_with(&q_lower) {
+                Some(4000)
+            } else if name_lower.contains(&q_lower) {
+                Some(3000)
+            } else if let Some(nucleo_score) = self.fuzzy.score(&query, &app.name) {
+                if nucleo_score > 300 { Some(2000 + nucleo_score as u32 / 10) } else { None }
+            } else {
+                None
+            };
 
+            if let Some(base_score) = score {
                 results.push(SearchResult {
                     title: app.name.clone(),
                     subtitle: app.path.to_string_lossy().to_string(),
                     kind: ResultKind::App,
-                    score: score + app.launch_count * 100,
+                    score: base_score + app.launch_count * 100,
                     action: ResultAction::Launch(app.path.clone()),
                 });
             }
@@ -198,11 +238,17 @@ impl ReflexApp {
     fn execute_action(&mut self, action: ResultAction, ctrl: bool) {
         match action {
             ResultAction::Launch(ref path) => {
-                platform::launch_app(path, ctrl); // ctrl = run as admin
+                platform::launch_app(path, ctrl);
+                // Track launch count for frequency ranking
+                if let Some(app) = self.apps.iter().find(|a| &a.path == path) {
+                    self.save_launch_count(&app.name);
+                    if let Some(entry) = self.apps.iter_mut().find(|a| &a.path == path) {
+                        entry.launch_count += 1;
+                    }
+                }
             }
             ResultAction::OpenFile(ref path) => {
                 if ctrl {
-                    // Ctrl+Enter on file = open containing folder
                     if let Some(parent) = path.parent() {
                         let _ = open::that(parent);
                     }
@@ -223,6 +269,7 @@ impl ReflexApp {
             }
             ResultAction::SystemAction(ref action_name) => {
                 match action_name.as_str() {
+                    "quit" => std::process::exit(0),
                     "ip" => {
                         let ip = platform::get_ip();
                         if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -249,7 +296,6 @@ impl ReflexApp {
         self.palette.show();
         self.last_query = String::new();
         let h = self.palette.ideal_height();
-        // Get screen size and center
         let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
         let x = (monitor.x - PALETTE_WIDTH) / 2.0;
         let y = monitor.y * 0.18;
@@ -260,7 +306,6 @@ impl ReflexApp {
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
         self.palette.hide();
-        // Move offscreen and shrink - keeps event loop alive unlike Minimized/Visible
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(0.0, 0.0)));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-100.0, -100.0)));
     }
@@ -268,6 +313,9 @@ impl ReflexApp {
 
 impl eframe::App for ReflexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Animate palette alpha
+        self.palette.tick_alpha();
+
         if self.hotkey_triggered.swap(false, Ordering::SeqCst) {
             if self.palette.visible {
                 self.hide_palette(ctx);
@@ -276,9 +324,9 @@ impl eframe::App for ReflexApp {
             }
         }
 
-        ctx.request_repaint_after(Duration::from_millis(50));
+        ctx.request_repaint_after(Duration::from_millis(30));
 
-        if !self.palette.visible {
+        if !self.palette.visible && self.palette.alpha < 0.01 {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(ui::theme::BG))
                 .show(ctx, |_ui| {});
@@ -290,9 +338,7 @@ impl eframe::App for ReflexApp {
         let ideal_h = self.palette.ideal_height();
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, ideal_h)));
 
-        // Check for Ctrl held (for Ctrl+Enter)
         let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
-
         let file_count = self.file_index.count();
         let indexing = self.file_index.is_indexing();
 
@@ -303,24 +349,13 @@ impl eframe::App for ReflexApp {
     }
 }
 
-fn fuzzy_contains(text: &str, pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    let mut current = chars.next();
-    for c in text.chars() {
-        if current == Some(c) {
-            current = chars.next();
-            if current.is_none() { return true; }
-        }
-    }
-    false
-}
-
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([PALETTE_WIDTH, 80.0])
             .with_decorations(false)
             .with_always_on_top()
+            .with_transparent(true)
             .with_title("Reflex"),
         centered: true,
         ..Default::default()
@@ -331,4 +366,25 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(ReflexApp::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fuzzy_matches_subsequence() {
+        let mut fm = FuzzyMatcher::new();
+        assert!(fm.score("vs", "Visual Studio Code").is_some());
+        assert!(fm.score("vsc", "Visual Studio Code").is_some());
+        assert!(fm.score("xyz", "Visual Studio Code").is_none());
+    }
+
+    #[test]
+    fn test_fuzzy_prefers_prefix() {
+        let mut fm = FuzzyMatcher::new();
+        let prefix = fm.score("chr", "Chrome").unwrap();
+        let middle = fm.score("hrm", "Chrome").unwrap();
+        assert!(prefix > middle);
+    }
 }
