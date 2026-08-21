@@ -42,6 +42,8 @@ struct ReflexApp {
     last_filter: ui::palette::Filter,
     fuzzy: FuzzyMatcher,
     launch_counts: Arc<Mutex<HashMap<String, u32>>>,
+    drag_pos: Option<egui::Pos2>,
+    window_pos: egui::Pos2,
 }
 
 impl ReflexApp {
@@ -88,6 +90,8 @@ impl ReflexApp {
             last_filter: ui::palette::Filter::All,
             fuzzy: FuzzyMatcher::new(),
             launch_counts,
+            drag_pos: None,
+            window_pos: egui::pos2(0.0, 0.0),
         }
     }
 
@@ -297,18 +301,18 @@ impl ReflexApp {
         self.last_query = String::new();
         let h = self.palette.ideal_height();
         let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
-        // Center horizontally, sit at ~20% from top (above middle, like Spotlight)
+        // Center horizontally, sit at ~22% from top
         let x = (monitor.x - PALETTE_WIDTH) / 2.0;
         let y = (monitor.y - h) * 0.22;
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        self.window_pos = egui::pos2(x, y);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, h)));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
         self.palette.hide();
-        // Shrink to zero in place — the fade handles the visual, no teleport
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, 1.0)));
+        // Don't resize here — the alpha fade + target_h in update() handles it
     }
 }
 
@@ -325,11 +329,32 @@ impl eframe::App for ReflexApp {
             }
         }
 
+        // Drag: click-and-hold in the input area (top 50px) to move the window
+        if self.palette.visible {
+            let (pos, delta, pressed) = ctx.input(|i| {
+                (i.pointer.interact_pos(), i.pointer.delta(), i.pointer.button_pressed(egui::PointerButton::Primary))
+            });
+            if let Some(p) = pos {
+                if p.y < 50.0 && pressed {
+                    if self.drag_pos.is_none() {
+                        self.drag_pos = Some(p);
+                    }
+                    self.window_pos += delta;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
+                } else {
+                    self.drag_pos = None;
+                }
+            }
+        } else {
+            self.drag_pos = None;
+        }
+
         ctx.request_repaint_after(Duration::from_millis(30));
 
         if !self.palette.visible && self.palette.alpha < 0.01 {
+            // Fully faded out — draw nothing (transparent window)
             egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(ui::theme::BG))
+                .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                 .show(ctx, |_ui| {});
             return;
         }
@@ -337,7 +362,8 @@ impl eframe::App for ReflexApp {
         self.do_search();
 
         let ideal_h = self.palette.ideal_height();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, ideal_h)));
+        let target_h = if self.palette.visible { ideal_h } else { ideal_h * self.palette.alpha };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, target_h.max(1.0))));
 
         let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
         let file_count = self.file_index.count();
@@ -365,8 +391,42 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Reflex",
         options,
-        Box::new(|cc| Ok(Box::new(ReflexApp::new(cc)))),
+        Box::new(|cc| {
+            // Load better system fonts
+            load_fonts(&cc.egui_ctx);
+            Ok(Box::new(ReflexApp::new(&cc)))
+        }),
     )
+}
+
+fn load_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Proportional: Segoe UI (Windows-native, clean)
+    if let Ok(data) = std::fs::read("C:\\Windows\\Fonts\\seguiui.ttf") {
+        fonts.font_data.insert(
+            "segoe_ui".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(data)),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Proportional,
+            vec!["segoe_ui".to_owned(), "Arial".to_owned()],
+        );
+    }
+
+    // Monospace: Cascadia Mono (Windows Terminal font, modern)
+    if let Ok(data) = std::fs::read("C:\\Windows\\Fonts\\CascadiaMono.ttf") {
+        fonts.font_data.insert(
+            "cascadia".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(data)),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Monospace,
+            vec!["cascadia".to_owned(), "Consolas".to_owned()],
+        );
+    }
+
+    ctx.set_fonts(fonts);
 }
 
 #[cfg(test)]
