@@ -297,8 +297,9 @@ impl ReflexApp {
         self.last_query = String::new();
         let h = self.palette.ideal_height();
         let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
+        // Center horizontally, sit at ~20% from top (above middle, like Spotlight)
         let x = (monitor.x - PALETTE_WIDTH) / 2.0;
-        let y = monitor.y * 0.18;
+        let y = (monitor.y - h) * 0.22;
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, h)));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -306,8 +307,8 @@ impl ReflexApp {
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
         self.palette.hide();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(0.0, 0.0)));
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-100.0, -100.0)));
+        // Shrink to zero in place — the fade handles the visual, no teleport
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PALETTE_WIDTH, 1.0)));
     }
 }
 
