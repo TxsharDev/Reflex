@@ -70,6 +70,7 @@ impl Config {
         }
     }
 
+    #[allow(dead_code)]
     pub fn save(&self) {
         let Some(path) = Self::path() else { return };
         if let Some(parent) = path.parent() {

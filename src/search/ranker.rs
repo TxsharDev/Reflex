@@ -20,6 +20,7 @@ pub enum ResultKind {
 }
 
 impl ResultKind {
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             ResultKind::App => "App",
@@ -54,5 +55,5 @@ pub fn rank_results(results: &mut [SearchResult]) {
         }
     }
 
-    results.sort_by(|a, b| b.score.cmp(&a.score));
+    results.sort_by_key(|b| std::cmp::Reverse(b.score));
 }

@@ -83,7 +83,7 @@ pub fn discover_apps() -> Vec<AppEntry> {
         scan_shortcuts_flat(&desktop, &mut apps, &mut seen);
     }
 
-    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps.sort_by_key(|a| a.name.to_lowercase());
     apps
 }
 
@@ -157,6 +157,7 @@ pub fn launch_app(path: &PathBuf, as_admin: bool) {
 
 // -- Process management --
 
+#[allow(dead_code)]
 pub fn kill_process(name: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;

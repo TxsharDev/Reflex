@@ -2,6 +2,32 @@
 
 All notable changes to Reflex will be documented here.
 
+## [2.1.0] - 2026-08-21
+
+### Added
+- **Fade in/out animation** - 120ms alpha lerp, transparent window, no more jarring pop
+- **Launch count persistence** - frequency ranking survives restarts (`launch_counts.json`)
+- **Quit action** - type "quit" or "exit" in the palette to close Reflex
+- **Unit tests** - 15 tests covering calculator parser (math, hex, binary, units) and nucleo fuzzy matching
+- **CI** - GitHub Actions: `cargo test` + `cargo clippy` on every push (Windows)
+
+### Changed
+- **Fuzzy matching** - app search now uses nucleo (same engine as helix) instead of a local subsequence matcher
+- **File indexer** - uses config `index_dirs` directly (was ignoring the param and re-deriving internally)
+- **Unit conversion** - handles glued value+unit input: `212f to c`, `2gb in mb`
+- **Repaint rate** - 50ms → 30ms for smoother animation
+
+### Fixed
+- `start_indexing` ignored its `dirs` parameter (underscore prefix)
+- Duplicate fuzzy logic: local `fuzzy_contains` in main.rs shadowed the nucleo module
+- `nucleo_score` was `u32` but had a redundant `as u32` cast
+- Unit conversion missed 3-token inputs (value+unit glued together)
+
+### Removed
+- `image` crate dependency (unused, for future image clipboard support)
+- Global `#![allow(dead_code)]` — replaced with targeted per-item attributes
+- Local `fuzzy_contains` function in main.rs
+
 ## [2.0.0] - 2026-05-26
 
 ### Added

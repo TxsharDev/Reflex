@@ -65,7 +65,7 @@ impl ReflexApp {
         }
 
         let file_index = FileIndex::new();
-        let index_dirs: Vec<PathBuf> = config.index_dirs.iter().map(|s| PathBuf::from(s)).collect();
+        let index_dirs: Vec<PathBuf> = config.index_dirs.iter().map(PathBuf::from).collect();
         file_index.start_indexing(index_dirs);
 
         let clipboard_hist = ClipboardHistory::new();
@@ -177,7 +177,7 @@ impl ReflexApp {
             } else if name_lower.contains(&q_lower) {
                 Some(3000)
             } else if let Some(nucleo_score) = self.fuzzy.score(&query, &app.name) {
-                if nucleo_score > 300 { Some(2000 + nucleo_score as u32 / 10) } else { None }
+                if nucleo_score > 300 { Some(2000 + nucleo_score / 10) } else { None }
             } else {
                 None
             };

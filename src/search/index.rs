@@ -14,6 +14,7 @@ pub struct FileEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+    #[allow(dead_code)]
     pub size: u64,
     pub ext: String,
     pub name_lower: String,
@@ -109,7 +110,7 @@ impl FileIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        results.sort_by_key(|b| std::cmp::Reverse(b.0));
         results.truncate(limit);
         results.into_iter().map(|(_, e)| e.clone()).collect()
     }

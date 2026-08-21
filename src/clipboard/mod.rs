@@ -11,6 +11,7 @@ const MAX_HISTORY: usize = 200;
 #[derive(Debug, Clone)]
 pub struct ClipEntry {
     pub text: String,
+    #[allow(dead_code)]
     pub timestamp: u64,
     pub pinned: bool,
 }
@@ -93,12 +94,14 @@ impl ClipboardHistory {
     }
 
     /// Clear all non-pinned entries.
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut entries = self.entries.write().unwrap();
         entries.retain(|e| e.pinned);
     }
 
     /// Toggle pin on an entry.
+    #[allow(dead_code)]
     pub fn toggle_pin(&self, index: usize) {
         let mut entries = self.entries.write().unwrap();
         if let Some(entry) = entries.get_mut(index) {

@@ -9,6 +9,7 @@ pub const YELLOW: Color32 = Color32::from_rgb(230, 192, 60);
 pub const RED: Color32 = Color32::from_rgb(240, 95, 95);
 pub const PURPLE: Color32 = Color32::from_rgb(175, 140, 255);
 pub const TEXT: Color32 = Color32::from_rgb(242, 242, 247);       // iOS-style white
+#[allow(dead_code)]
 pub const TEXT_SEC: Color32 = Color32::from_rgb(155, 155, 170);
 pub const DIM: Color32 = Color32::from_rgb(98, 98, 112);
 pub const BG: Color32 = Color32::from_rgb(28, 28, 36);           // main background
