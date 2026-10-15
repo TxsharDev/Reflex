@@ -310,7 +310,7 @@ impl ReflexApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
-    fn hide_palette(&mut self, ctx: &egui::Context) {
+    fn hide_palette(&mut self, _ctx: &egui::Context) {
         self.palette.hide();
         // Don't resize here — the alpha fade + target_h in update() handles it
     }
@@ -394,7 +394,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             // Load better system fonts
             load_fonts(&cc.egui_ctx);
-            Ok(Box::new(ReflexApp::new(&cc)))
+            Ok(Box::new(ReflexApp::new(cc)))
         }),
     )
 }

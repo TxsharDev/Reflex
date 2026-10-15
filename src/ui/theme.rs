@@ -1,10 +1,4 @@
 //! Reflex theme — Lumen Night Foundry register.
-//!
-//! /* Hallmark · theme: lumen · drop: night · genre: technical
-//!  * accent: molten brass (H 50) · canvas: cool-violet (H 265)
-//!  * type: lowercase prose + UPPERCASE mono labels
-//!  * contrast: pass
-//!  */
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, Visuals};
 
@@ -39,26 +33,26 @@ pub fn apply(ctx: &egui::Context) {
     visuals.faint_bg_color = SURFACE;
 
     visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, DIM);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, DIM);
     visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
 
     visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
     visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
 
     visuals.widgets.hovered.bg_fill = HOVER;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
 
     visuals.widgets.active.bg_fill = SELECTED;
-    visuals.widgets.active.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    visuals.widgets.active.fg_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
     visuals.widgets.active.corner_radius = CornerRadius::same(6);
 
     visuals.selection.bg_fill = ACCENT.gamma_multiply(0.12);
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
     visuals.window_corner_radius = CornerRadius::same(12);
-    visuals.window_stroke = Stroke::new(1.0, BORDER);
+    visuals.window_stroke = Stroke::new(1.0_f32, BORDER);
 
     ctx.set_visuals(visuals);
 

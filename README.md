@@ -4,10 +4,6 @@
 
 The command palette Windows never built. One hotkey opens everything - apps, files, clipboard, calculator, system commands. GPU-rendered, instant results, single binary.
 
-<p align="center">
-  <img src="assets/screenshot.png" alt="Reflex command palette" width="660">
-</p>
-
 ## What it does
 
 **Alt+Space** and start typing.
@@ -47,8 +43,6 @@ cargo build --release
 target\release\reflex.exe
 ```
 
-Or grab the latest release binary from [Releases](https://github.com/TxsharDev/Reflex/releases).
-
 ## Tech
 
 Rust + egui/eframe (glow) + windows-rs. Nucleo fuzzy matching, two-phase file indexer, clipboard watcher, global hotkey via Win32 RegisterHotKey, DWM rounded corners.
@@ -64,7 +58,7 @@ Type `quit` in the palette and hit Enter. No tray icon, no config to kill the ho
 
 ## Status
 
-v2.0 - core features solid, polished for daily use.
+v2.1 - core features solid, polished for daily use.
 
 ## Planned
 

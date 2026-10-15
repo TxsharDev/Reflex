@@ -1,10 +1,4 @@
 //! Command palette — Lumen Night Foundry.
-//!
-//! /* Hallmark · component: palette · genre: technical · theme: lumen-night
-//!  * states: default · hover · focus · selected · empty
-//!  * type: lowercase input + UPPERCASE mono badges
-//!  * contrast: pass
-//!  */
 
 use eframe::egui;
 use crate::search::ranker::{SearchResult, ResultKind, ResultAction};
@@ -129,7 +123,7 @@ pub fn draw(ctx: &egui::Context, state: &mut PaletteState, _ctrl_held: bool, fil
             egui::Frame::NONE
                 .fill(bg)
                 .corner_radius(egui::CornerRadius::same(12))
-                .stroke(egui::Stroke::new(1.0, border))
+                .stroke(egui::Stroke::new(1.0_f32, border))
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 4],
                     blur: 24,
@@ -177,7 +171,7 @@ pub fn draw(ctx: &egui::Context, state: &mut PaletteState, _ctrl_held: bool, fil
                                 egui::Button::new(text)
                                     .fill(if active { with_alpha(theme::ACCENT.gamma_multiply(0.08), alpha) } else { egui::Color32::TRANSPARENT })
                                     .corner_radius(egui::CornerRadius::same(4))
-                                    .stroke(if active { egui::Stroke::new(0.5, with_alpha(theme::ACCENT.gamma_multiply(0.3), alpha)) } else { egui::Stroke::new(0.0, egui::Color32::TRANSPARENT) })
+                                    .stroke(if active { egui::Stroke::new(0.5_f32, with_alpha(theme::ACCENT.gamma_multiply(0.3), alpha)) } else { egui::Stroke::new(0.0_f32, egui::Color32::TRANSPARENT) })
                             );
                             if btn.clicked() {
                                 state.filter = filter;
@@ -255,7 +249,7 @@ pub fn draw(ctx: &egui::Context, state: &mut PaletteState, _ctrl_held: bool, fil
                 p.line_segment(
                     [egui::pos2(footer_rect.left() + 10.0, footer_rect.top()),
                      egui::pos2(footer_rect.right() - 10.0, footer_rect.top())],
-                    egui::Stroke::new(0.5, with_alpha(theme::BORDER, alpha)),
+                    egui::Stroke::new(0.5_f32, with_alpha(theme::BORDER, alpha)),
                 );
 
                 let status = if indexing {
@@ -376,7 +370,7 @@ impl<'a> egui::Widget for ResultRow<'a> {
                 painter.text(
                     egui::pos2(right_x, mid_y),
                     egui::Align2::RIGHT_CENTER,
-                    &badge.to_uppercase(),
+                    badge.to_uppercase(),
                     egui::FontId::new(9.0, egui::FontFamily::Monospace),
                     with_alpha(theme::DIM, self.alpha),
                 );
