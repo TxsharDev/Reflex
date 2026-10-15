@@ -1,111 +1,115 @@
-//! Clipboard history manager.
+//! Text clipboard history for the current session.
 //!
-//! Monitors the system clipboard and stores a history of copied items.
-//! Supports text and images. Searchable.
+//! A background thread polls the clipboard sequence number, which is cheap
+//! and never opens the clipboard, and reads the text only when it changes.
+//! Content the owner marked private (password managers do this) is skipped.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use crate::platform;
 
 const MAX_HISTORY: usize = 200;
 
-#[derive(Debug, Clone)]
-pub struct ClipEntry {
-    pub text: String,
-    #[allow(dead_code)]
-    pub timestamp: u64,
-    pub pinned: bool,
-}
-
 pub struct ClipboardHistory {
-    entries: Arc<RwLock<Vec<ClipEntry>>>,
-    last_content: Arc<RwLock<String>>,
+    entries: Arc<RwLock<Vec<String>>>,
+    version: Arc<AtomicU64>,
 }
 
 impl ClipboardHistory {
-    pub fn new() -> Self {
-        Self {
+    pub fn start() -> Self {
+        let history = Self {
             entries: Arc::new(RwLock::new(Vec::new())),
-            last_content: Arc::new(RwLock::new(String::new())),
-        }
-    }
-
-    /// Start watching the clipboard on a background thread.
-    pub fn start_watching(&self) {
-        let entries = self.entries.clone();
-        let last_content = self.last_content.clone();
+            version: Arc::new(AtomicU64::new(0)),
+        };
+        let entries = history.entries.clone();
+        let version = history.version.clone();
 
         std::thread::spawn(move || {
+            let mut last_sequence = 0;
             loop {
-                if let Ok(mut clipboard) = arboard::Clipboard::new()
-                    && let Ok(text) = clipboard.get_text()
-                    && !text.is_empty()
-                {
-                    let last = last_content.read().unwrap().clone();
-                    if text != last {
-                        *last_content.write().unwrap() = text.clone();
-
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-
-                        let mut entries = entries.write().unwrap();
-                        entries.retain(|e| e.text != text);
-                        entries.insert(0, ClipEntry { text, timestamp, pinned: false });
-
-                        while entries.len() > MAX_HISTORY {
-                            if let Some(pos) = entries.iter().rposition(|e| !e.pinned) {
-                                entries.remove(pos);
-                            } else {
-                                break;
-                            }
-                        }
+                let sequence = platform::clipboard_sequence();
+                if sequence != last_sequence {
+                    last_sequence = sequence;
+                    if let Some(text) = read_text() {
+                        remember(&mut entries.write().unwrap(), text);
+                        version.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(Duration::from_millis(250));
             }
         });
+
+        history
     }
 
-    /// Get all entries.
-    pub fn entries(&self) -> Vec<ClipEntry> {
-        self.entries.read().unwrap().clone()
+    /// Bumped whenever the history changes.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
     }
 
-    /// Search clipboard history.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<ClipEntry> {
-        let q = query.to_lowercase();
-        let entries = self.entries.read().unwrap();
-        entries
+    pub fn recent(&self, limit: usize) -> Vec<String> {
+        self.entries
+            .read()
+            .unwrap()
             .iter()
-            .filter(|e| e.text.to_lowercase().contains(&q))
             .take(limit)
             .cloned()
             .collect()
     }
 
-    /// Paste a specific clip to the system clipboard.
-    pub fn paste(&self, text: &str) {
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(text);
-        }
-        // Update last_content so we don't re-add it to history
-        *self.last_content.write().unwrap() = text.to_string();
+    pub fn search(&self, query: &str, limit: usize) -> Vec<String> {
+        let query = query.to_lowercase();
+        self.entries
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|text| text.to_lowercase().contains(&query))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
+
+fn read_text() -> Option<String> {
+    if platform::clipboard_is_private() {
+        return None;
+    }
+    let text = arboard::Clipboard::new().ok()?.get_text().ok()?;
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// Moves `text` to the front, dropping any older copy and the oldest overflow.
+fn remember(entries: &mut Vec<String>, text: String) {
+    entries.retain(|existing| *existing != text);
+    entries.insert(0, text);
+    entries.truncate(MAX_HISTORY);
+}
+
+/// Puts `text` on the clipboard. The watcher then moves it to the front.
+pub fn copy(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remember_dedupes_and_moves_to_front() {
+        let mut entries = vec!["b".to_string(), "a".to_string()];
+        remember(&mut entries, "a".to_string());
+        assert_eq!(entries, ["a", "b"]);
     }
 
-    /// Clear all non-pinned entries.
-    #[allow(dead_code)]
-    pub fn clear(&self) {
-        let mut entries = self.entries.write().unwrap();
-        entries.retain(|e| e.pinned);
-    }
-
-    /// Toggle pin on an entry.
-    #[allow(dead_code)]
-    pub fn toggle_pin(&self, index: usize) {
-        let mut entries = self.entries.write().unwrap();
-        if let Some(entry) = entries.get_mut(index) {
-            entry.pinned = !entry.pinned;
-        }
+    #[test]
+    fn remember_caps_history() {
+        let mut entries: Vec<String> = (0..MAX_HISTORY).map(|i| i.to_string()).collect();
+        remember(&mut entries, "new".to_string());
+        assert_eq!(entries.len(), MAX_HISTORY);
+        assert_eq!(entries[0], "new");
     }
 }

@@ -1,322 +1,289 @@
-//! Inline calculator - math, unit conversion, hex/binary.
+//! Inline calculator: arithmetic, hex/binary, and unit conversion.
 
-/// Try to evaluate the input as a math expression or conversion.
-/// Returns None if input doesn't look like math.
+/// Evaluates `input` if it looks like math or a conversion. The result is the
+/// bare value, ready to copy (`"1024"`, `"0xFF"`, `"100 °C"`).
 pub fn evaluate(input: &str) -> Option<String> {
     let input = input.trim();
-    if input.is_empty() { return None; }
-
-    // Hex conversion: "0xff" or "0xFF" or "255 in hex"
-    if let Some(result) = try_hex_conversion(input) {
-        return Some(result);
-    }
-
-    // Unit conversion: "100f to c", "32gb in mb"
-    if let Some(result) = try_unit_conversion(input) {
-        return Some(result);
-    }
-
-    // Math expression
-    try_math(input)
-}
-
-fn try_math(input: &str) -> Option<String> {
-    // Only evaluate if it contains math-like characters
-    if !input.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '%' | '^' | '(' | ')')) {
-        // Could be a plain number
-        if input.parse::<f64>().is_ok() {
-            return None; // Just a number, not interesting
-        }
+    if input.is_empty() {
         return None;
     }
+    convert_base(input)
+        .or_else(|| convert_unit(input))
+        .or_else(|| arithmetic(input))
+}
 
-    // Simple expression evaluator
-    let result = eval_expr(input)?;
+fn arithmetic(input: &str) -> Option<String> {
+    // A bare number is a search, not a calculation.
+    if !input.contains(['+', '-', '*', '/', '%', '^', '(', ')']) {
+        return None;
+    }
+    let value = eval(input)?;
+    value.is_finite().then(|| format_number(value))
+}
 
-    // Format nicely
-    if result == result.floor() && result.abs() < 1e15 {
-        Some(format!("= {}", result as i64))
+fn format_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
     } else {
-        Some(format!("= {:.6}", result).trim_end_matches('0').trim_end_matches('.').to_string())
+        let fixed = format!("{value:.6}");
+        fixed
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
-/// Simple recursive descent expression parser.
-/// Supports: + - * / % ^ ( ) and decimal numbers.
-fn eval_expr(input: &str) -> Option<f64> {
+/// Recursive descent over `+ - * / % ^ ( )` and decimal numbers.
+fn eval(input: &str) -> Option<f64> {
     let tokens: Vec<char> = input.chars().filter(|c| !c.is_whitespace()).collect();
     let mut pos = 0;
-    let result = parse_add(&tokens, &mut pos)?;
-    if pos == tokens.len() { Some(result) } else { None }
+    let value = sum(&tokens, &mut pos)?;
+    (pos == tokens.len()).then_some(value)
 }
 
-fn parse_add(tokens: &[char], pos: &mut usize) -> Option<f64> {
-    let mut left = parse_mul(tokens, pos)?;
-    while *pos < tokens.len() {
-        match tokens[*pos] {
-            '+' => { *pos += 1; left += parse_mul(tokens, pos)?; }
-            '-' => { *pos += 1; left -= parse_mul(tokens, pos)?; }
+fn sum(t: &[char], pos: &mut usize) -> Option<f64> {
+    let mut left = product(t, pos)?;
+    while let Some(&op) = t.get(*pos) {
+        match op {
+            '+' => {
+                *pos += 1;
+                left += product(t, pos)?;
+            }
+            '-' => {
+                *pos += 1;
+                left -= product(t, pos)?;
+            }
             _ => break,
         }
     }
     Some(left)
 }
 
-fn parse_mul(tokens: &[char], pos: &mut usize) -> Option<f64> {
-    let mut left = parse_pow(tokens, pos)?;
-    while *pos < tokens.len() {
-        match tokens[*pos] {
-            '*' => { *pos += 1; left *= parse_pow(tokens, pos)?; }
-            '/' => { *pos += 1; let r = parse_pow(tokens, pos)?; if r == 0.0 { return None; } left /= r; }
-            '%' => { *pos += 1; let r = parse_pow(tokens, pos)?; if r == 0.0 { return None; } left %= r; }
-            _ => break,
+fn product(t: &[char], pos: &mut usize) -> Option<f64> {
+    let mut left = power(t, pos)?;
+    while let Some(&op) = t.get(*pos) {
+        if !matches!(op, '*' | '/' | '%') {
+            break;
         }
+        *pos += 1;
+        let right = power(t, pos)?;
+        left = match op {
+            '*' => left * right,
+            _ if right == 0.0 => return None,
+            '/' => left / right,
+            _ => left % right,
+        };
     }
     Some(left)
 }
 
-fn parse_pow(tokens: &[char], pos: &mut usize) -> Option<f64> {
-    let base = parse_unary(tokens, pos)?;
-    if *pos < tokens.len() && tokens[*pos] == '^' {
+fn power(t: &[char], pos: &mut usize) -> Option<f64> {
+    let base = unary(t, pos)?;
+    if t.get(*pos) == Some(&'^') {
         *pos += 1;
-        let exp = parse_pow(tokens, pos)?;
-        Some(base.powf(exp))
-    } else {
-        Some(base)
+        return Some(base.powf(power(t, pos)?));
     }
+    Some(base)
 }
 
-fn parse_unary(tokens: &[char], pos: &mut usize) -> Option<f64> {
-    if *pos < tokens.len() && tokens[*pos] == '-' {
+fn unary(t: &[char], pos: &mut usize) -> Option<f64> {
+    if t.get(*pos) == Some(&'-') {
         *pos += 1;
-        Some(-parse_atom(tokens, pos)?)
-    } else {
-        parse_atom(tokens, pos)
+        return Some(-unary(t, pos)?);
     }
+    atom(t, pos)
 }
 
-fn parse_atom(tokens: &[char], pos: &mut usize) -> Option<f64> {
-    if *pos >= tokens.len() { return None; }
-
-    if tokens[*pos] == '(' {
+fn atom(t: &[char], pos: &mut usize) -> Option<f64> {
+    if t.get(*pos) == Some(&'(') {
         *pos += 1;
-        let val = parse_add(tokens, pos)?;
-        if *pos < tokens.len() && tokens[*pos] == ')' {
+        let value = sum(t, pos)?;
+        if t.get(*pos) == Some(&')') {
             *pos += 1;
         }
-        return Some(val);
+        return Some(value);
     }
-
-    // Parse number
     let start = *pos;
-    while *pos < tokens.len() && (tokens[*pos].is_ascii_digit() || tokens[*pos] == '.') {
+    while t.get(*pos).is_some_and(|c| c.is_ascii_digit() || *c == '.') {
         *pos += 1;
     }
-    if *pos == start { return None; }
-
-    let num_str: String = tokens[start..*pos].iter().collect();
-    num_str.parse().ok()
+    t[start..*pos].iter().collect::<String>().parse().ok()
 }
 
-fn try_hex_conversion(input: &str) -> Option<String> {
+/// `0xff`, `0b1010`, `255 in hex`, `10 to binary`.
+fn convert_base(input: &str) -> Option<String> {
     let lower = input.to_lowercase();
 
-    // "0xff" -> decimal
     if let Some(hex) = lower.strip_prefix("0x") {
-        let val = u64::from_str_radix(hex, 16).ok()?;
-        return Some(format!("= {} (decimal)", val));
+        return u64::from_str_radix(hex, 16).ok().map(|v| v.to_string());
     }
-
-    // "255 in hex" or "255 to hex"
-    if lower.ends_with(" in hex") || lower.ends_with(" to hex") {
-        let num_str = lower.split_whitespace().next()?;
-        let val: u64 = num_str.parse().ok()?;
-        return Some(format!("= 0x{:X}", val));
-    }
-
-    // "255 in binary" or "255 to binary" or "255 in bin"
-    if lower.ends_with(" in binary") || lower.ends_with(" to binary") || lower.ends_with(" in bin") {
-        let num_str = lower.split_whitespace().next()?;
-        let val: u64 = num_str.parse().ok()?;
-        return Some(format!("= {:b}", val));
-    }
-
-    // "0b1111" -> decimal
     if let Some(bin) = lower.strip_prefix("0b") {
-        let val = u64::from_str_radix(bin, 2).ok()?;
-        return Some(format!("= {} (decimal)", val));
+        return u64::from_str_radix(bin, 2).ok().map(|v| v.to_string());
     }
 
+    let (number, target) = lower
+        .split_once(" in ")
+        .or_else(|| lower.split_once(" to "))?;
+    let value: u64 = number.trim().parse().ok()?;
+    match target.trim() {
+        "hex" => Some(format!("0x{value:X}")),
+        "bin" | "binary" => Some(format!("0b{value:b}")),
+        _ => None,
+    }
+}
+
+/// `100 f to c`, `212f in c`, `2gb to mb`, `5 km in mi`, `3 lb to kg`.
+fn convert_unit(input: &str) -> Option<String> {
+    let lower = input.to_lowercase();
+    let (quantity, target) = lower
+        .split_once(" to ")
+        .or_else(|| lower.split_once(" in "))?;
+    let quantity = quantity.trim();
+    let split = quantity.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')?;
+    let value: f64 = quantity[..split].trim().parse().ok()?;
+    let from = quantity[split..].trim();
+    let to = target.trim();
+
+    if let Some(result) = temperature(value, from, to) {
+        return Some(result);
+    }
+    for (units, decimals) in [(DATA, 2), (LENGTH, 4), (MASS, 4)] {
+        let scale = |name: &str| {
+            units
+                .iter()
+                .find(|(names, _)| names.contains(&name))
+                .map(|(_, s)| *s)
+        };
+        if let (Some(a), Some(b)) = (scale(from), scale(to)) {
+            let label = units
+                .iter()
+                .find(|(names, _)| names.contains(&to))
+                .map(|(n, _)| n[0])?;
+            let result = format!("{:.*}", decimals, value * a / b);
+            let result = if result.contains('.') {
+                result
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_string()
+            } else {
+                result
+            };
+            return Some(format!("{result} {label}"));
+        }
+    }
     None
 }
 
-fn try_unit_conversion(input: &str) -> Option<String> {
-    let lower = input.to_lowercase();
-    let parts: Vec<&str> = lower.split_whitespace().collect();
+type UnitTable = &'static [(&'static [&'static str], f64)];
 
-    // Pattern: "VALUE UNIT to/in UNIT" or "VALUEUNIT to/in UNIT"
-    let (val, from, to) = if parts.len() >= 4 {
-        let v: f64 = parts[0].parse().ok()?;
-        (v, parts[1], parts[3])
-    } else if parts.len() == 3 {
-        // Glued: "212f to c" -> split first token into number + unit
-        let first = parts[0];
-        let split_at = first.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(first.len());
-        if split_at == 0 || split_at == first.len() { return None; }
-        let v: f64 = first[..split_at].parse().ok()?;
-        (v, &first[split_at..], parts[2])
-    } else {
-        return None;
-    };
+const DATA: UnitTable = &[
+    (&["B", "b", "byte", "bytes"], 1.0),
+    (&["KB", "kb", "kib"], 1024.0),
+    (&["MB", "mb", "mib"], 1024.0 * 1024.0),
+    (&["GB", "gb", "gib"], 1024.0 * 1024.0 * 1024.0),
+    (&["TB", "tb", "tib"], 1024.0 * 1024.0 * 1024.0 * 1024.0),
+];
 
-    // Middle token should be "to" or "in"
-    let connector = if parts.len() >= 4 { parts[2] } else { parts[1] };
-    if connector != "to" && connector != "in" { return None; }
+const LENGTH: UnitTable = &[
+    (&["mm", "millimeters"], 0.001),
+    (&["cm", "centimeters"], 0.01),
+    (&["m", "meters"], 1.0),
+    (&["km", "kilometers"], 1000.0),
+    (&["in", "inch", "inches"], 0.0254),
+    (&["ft", "feet", "foot"], 0.3048),
+    (&["mi", "miles", "mile"], 1609.344),
+];
 
-    // Temperature
-    match (from, to) {
-        ("f" | "fahrenheit", "c" | "celsius") => return Some(format!("= {:.1}C", (val - 32.0) * 5.0 / 9.0)),
-        ("c" | "celsius", "f" | "fahrenheit") => return Some(format!("= {:.1}F", val * 9.0 / 5.0 + 32.0)),
-        ("k" | "kelvin", "c" | "celsius") => return Some(format!("= {:.1}C", val - 273.15)),
-        ("c" | "celsius", "k" | "kelvin") => return Some(format!("= {:.1}K", val + 273.15)),
-        _ => {}
-    }
+const MASS: UnitTable = &[
+    (&["g", "grams"], 1.0),
+    (&["kg", "kilograms"], 1000.0),
+    (&["oz", "ounces"], 28.349_523_125),
+    (&["lb", "lbs", "pounds"], 453.592_37),
+];
 
-    // Data sizes
-    let bytes = match from {
-        "b" | "bytes" => Some(val),
-        "kb" => Some(val * 1024.0),
-        "mb" => Some(val * 1024.0 * 1024.0),
-        "gb" => Some(val * 1024.0 * 1024.0 * 1024.0),
-        "tb" => Some(val * 1024.0 * 1024.0 * 1024.0 * 1024.0),
+fn temperature(value: f64, from: &str, to: &str) -> Option<String> {
+    let unit = |s: &str| match s {
+        "c" | "celsius" => Some('C'),
+        "f" | "fahrenheit" => Some('F'),
+        "k" | "kelvin" => Some('K'),
         _ => None,
     };
-
-    if let Some(b) = bytes {
-        let result = match to {
-            "b" | "bytes" => Some(format!("= {:.0} B", b)),
-            "kb" => Some(format!("= {:.2} KB", b / 1024.0)),
-            "mb" => Some(format!("= {:.2} MB", b / (1024.0 * 1024.0))),
-            "gb" => Some(format!("= {:.2} GB", b / (1024.0 * 1024.0 * 1024.0))),
-            "tb" => Some(format!("= {:.4} TB", b / (1024.0 * 1024.0 * 1024.0 * 1024.0))),
-            _ => None,
-        };
-        if result.is_some() { return result; }
-    }
-
-    // Distance
-    let meters = match from {
-        "km" | "kilometers" => Some(val * 1000.0),
-        "m" | "meters" => Some(val),
-        "cm" | "centimeters" => Some(val / 100.0),
-        "mi" | "miles" => Some(val * 1609.34),
-        "ft" | "feet" => Some(val * 0.3048),
-        "in" | "inches" if to != "hex" && to != "binary" && to != "bin" => Some(val * 0.0254),
-        _ => None,
+    let celsius = match unit(from)? {
+        'C' => value,
+        'F' => (value - 32.0) * 5.0 / 9.0,
+        _ => value - 273.15,
     };
-
-    if let Some(m) = meters {
-        let result = match to {
-            "km" | "kilometers" => Some(format!("= {:.4} km", m / 1000.0)),
-            "m" | "meters" => Some(format!("= {:.2} m", m)),
-            "cm" | "centimeters" => Some(format!("= {:.1} cm", m * 100.0)),
-            "mi" | "miles" => Some(format!("= {:.4} mi", m / 1609.34)),
-            "ft" | "feet" => Some(format!("= {:.2} ft", m / 0.3048)),
-            "inches" => Some(format!("= {:.2} in", m / 0.0254)),
-            _ => None,
-        };
-        if result.is_some() { return result; }
-    }
-
-    // Weight
-    let grams = match from {
-        "kg" | "kilograms" => Some(val * 1000.0),
-        "g" | "grams" => Some(val),
-        "lb" | "lbs" | "pounds" => Some(val * 453.592),
-        "oz" | "ounces" => Some(val * 28.3495),
-        _ => None,
+    let (result, label) = match unit(to)? {
+        'C' => (celsius, "°C"),
+        'F' => (celsius * 9.0 / 5.0 + 32.0, "°F"),
+        _ => (celsius + 273.15, "K"),
     };
-
-    if let Some(g) = grams {
-        let result = match to {
-            "kg" | "kilograms" => Some(format!("= {:.4} kg", g / 1000.0)),
-            "g" | "grams" => Some(format!("= {:.2} g", g)),
-            "lb" | "lbs" | "pounds" => Some(format!("= {:.4} lbs", g / 453.592)),
-            "oz" | "ounces" => Some(format!("= {:.2} oz", g / 28.3495)),
-            _ => None,
-        };
-        if result.is_some() { return result; }
-    }
-
-    None
+    Some(format!(
+        "{} {label}",
+        format_number((result * 10.0).round() / 10.0)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_basic_addition() {
-        assert_eq!(evaluate("2 + 3"), Some("= 5".to_string()));
+    fn eval(input: &str) -> Option<String> {
+        evaluate(input)
     }
 
     #[test]
-    fn test_multiplication_precedence() {
-        assert_eq!(evaluate("2 + 3 * 4"), Some("= 14".to_string()));
+    fn arithmetic_respects_precedence() {
+        assert_eq!(eval("2 + 3 * 4").as_deref(), Some("14"));
+        assert_eq!(eval("(2 + 3) * 4").as_deref(), Some("20"));
+        assert_eq!(eval("2 ^ 10").as_deref(), Some("1024"));
+        assert_eq!(eval("2 ^ 3 ^ 2").as_deref(), Some("512"));
+        assert_eq!(eval("10 / 4").as_deref(), Some("2.5"));
+        assert_eq!(eval("3 - 10").as_deref(), Some("-7"));
+        assert_eq!(eval("-(2 + 3)").as_deref(), Some("-5"));
+        assert_eq!(eval("2 * -3").as_deref(), Some("-6"));
+        assert_eq!(eval("1 / 3").as_deref(), Some("0.333333"));
     }
 
     #[test]
-    fn test_parentheses() {
-        assert_eq!(evaluate("(2 + 3) * 4"), Some("= 20".to_string()));
+    fn invalid_or_non_finite_math_is_rejected() {
+        assert_eq!(eval("1 / 0"), None);
+        assert_eq!(eval("(-8) ^ 0.5"), None);
+        assert_eq!(eval("10 ^ 400"), None);
+        assert_eq!(eval("2 +"), None);
+        assert_eq!(eval("my-file"), None);
     }
 
     #[test]
-    fn test_power() {
-        assert_eq!(evaluate("2 ^ 10"), Some("= 1024".to_string()));
+    fn plain_words_and_numbers_are_not_math() {
+        assert_eq!(eval("hello"), None);
+        assert_eq!(eval("42"), None);
     }
 
     #[test]
-    fn test_division() {
-        assert_eq!(evaluate("10 / 4"), Some("= 2.5".to_string()));
+    fn base_conversion() {
+        assert_eq!(eval("0xFF").as_deref(), Some("255"));
+        assert_eq!(eval("0b1111").as_deref(), Some("15"));
+        assert_eq!(eval("255 in hex").as_deref(), Some("0xFF"));
+        assert_eq!(eval("5 to binary").as_deref(), Some("0b101"));
+        assert_eq!(eval("0xZZ"), None);
     }
 
     #[test]
-    fn test_negative_result() {
-        assert_eq!(evaluate("3 - 10"), Some("= -7".to_string()));
+    fn temperature_conversion() {
+        assert_eq!(eval("212f to c").as_deref(), Some("100 °C"));
+        assert_eq!(eval("100 c in f").as_deref(), Some("212 °F"));
+        assert_eq!(eval("0 c to k").as_deref(), Some("273.2 K"));
+        assert_eq!(eval("-40 f to c").as_deref(), Some("-40 °C"));
     }
 
     #[test]
-    fn test_hex_to_decimal() {
-        assert_eq!(evaluate("0xFF"), Some("= 255 (decimal)".to_string()));
-    }
-
-    #[test]
-    fn test_decimal_to_hex() {
-        assert_eq!(evaluate("255 in hex"), Some("= 0xFF".to_string()));
-    }
-
-    #[test]
-    fn test_binary_to_decimal() {
-        assert_eq!(evaluate("0b1111"), Some("= 15 (decimal)".to_string()));
-    }
-
-    #[test]
-    fn test_fahrenheit_to_celsius() {
-        assert_eq!(evaluate("212f to c"), Some("= 100.0C".to_string()));
-    }
-
-    #[test]
-    fn test_gb_to_mb() {
-        assert_eq!(evaluate("2gb in mb"), Some("= 2048.00 MB".to_string()));
-    }
-
-    #[test]
-    fn test_not_math_returns_none() {
-        assert_eq!(evaluate("hello"), None);
-    }
-
-    #[test]
-    fn test_plain_number_returns_none() {
-        assert_eq!(evaluate("42"), None);
+    fn unit_conversion() {
+        assert_eq!(eval("2gb in mb").as_deref(), Some("2048 MB"));
+        assert_eq!(eval("1 mi to km").as_deref(), Some("1.6093 km"));
+        assert_eq!(eval("12 in to cm").as_deref(), Some("30.48 cm"));
+        assert_eq!(eval("30 cm in in").as_deref(), Some("11.811 in"));
+        assert_eq!(eval("1 kg to lb").as_deref(), Some("2.2046 lb"));
+        assert_eq!(eval("5 kg to km"), None);
     }
 }

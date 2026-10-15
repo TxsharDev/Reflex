@@ -1,76 +1,55 @@
 # Reflex
 
-**Faster than thinking.**
+A command palette for Windows. Press **Alt+Space** and type: apps, files, clipboard history, math, and system commands in one place.
 
-The command palette Windows never built. One hotkey opens everything - apps, files, clipboard, calculator, system commands. GPU-rendered, instant results, single binary.
+## Features
 
-## What it does
+- **Apps**: everything in the Start menu, including Store apps, plus desktop shortcuts. Fuzzy matched and ranked by how often you launch them.
+- **Files**: your home folder and every drive, indexed in the background. Type `.pdf` to search by extension, or several words to match across the path.
+- **Clipboard**: text you copy during the session. Enter pastes into the window you came from. Content that password managers mark as private is never recorded.
+- **Calculator**: `256 * 1024`, `2 ^ 10`, `0xFF`, `255 in hex`, `212f to c`, `2gb in mb`, `5 km to mi`, `3 lb to kg`.
+- **Commands**: sleep, lock, restart, shut down, empty Recycle Bin, copy IP address, open terminal, screenshot, quit. Restart and shut down ask for a second Enter.
 
-**Alt+Space** and start typing.
+## Keys
 
-- **Apps** - every installed app, fuzzy matched (nucleo), ranked by usage. Enter to launch, Ctrl+Enter for admin.
-- **Files** - searches your filesystem in the background. Two-phase indexer: user dirs first, then drives.
-- **Clipboard** - never lose a copy again. 200 clips stored, searchable, one Enter to paste.
-- **Calculator** - type math inline: `256 * 1024`, `0xFF`, `100 f to c`, `32 gb in mb`.
-- **System** - sleep, shutdown, restart, lock, empty recycle bin, get IP, open terminal, screenshot, quit.
-- **Filters** - Tab cycles through All/Apps/Files/Clipboard/Actions.
+| Key | Action |
+| --- | --- |
+| Alt+Space | Open / close |
+| Up / Down | Move selection |
+| Tab / Shift+Tab | Cycle filters (all, apps, files, clips, actions) |
+| Enter | Open, paste, copy, or run |
+| Ctrl+Enter | Run as admin (apps), show in folder (files), copy without pasting (clips) |
+| Esc | Close and return focus |
 
-## Why this exists
+Drag any empty part of the palette to move it. Clicking another window closes it.
 
-Windows in 2026 has no command palette. Start Menu searches the web. PowerToys Run is slow. Flow Launcher is Electron. Everything is file-only. Ditto is clipboard-only. Raycast and Alfred are Mac-only.
+## Build
 
-Reflex is all of them in one ~8MB binary. No installer. No Electron. No cloud. No accounts.
-
-## Design
-
-- Borderless floating window with OS-level rounded corners (DWM, Win11)
-- Dark theme, custom-painted result rows
-- Color-coded results (green=app, blue=file, yellow=calc, purple=clip, red=action)
-- Keyboard hints on selected results
-- No taskbar entry - appears and disappears like Spotlight
-- 120ms fade in/out - never feels abrupt
-- Dynamic sizing - grows with results, shrinks when empty
-
-## Quick start
+Requires Windows 10 or 11 and a Rust toolchain.
 
 ```bash
-# Clone and build
 git clone https://github.com/TxsharDev/Reflex
 cd Reflex
 cargo build --release
-
-# Run (single binary, no installer)
 target\release\reflex.exe
 ```
 
-## Tech
-
-Rust + egui/eframe (glow) + windows-rs. Nucleo fuzzy matching, two-phase file indexer, clipboard watcher, global hotkey via Win32 RegisterHotKey, DWM rounded corners.
+To start it with Windows, put a shortcut to `reflex.exe` in `shell:startup`.
 
 ## Config
 
-`%APPDATA%\reflex\config.json` - max results, index dirs, theme.
-`%APPDATA%\reflex\launch_counts.json` - app frequency ranking (persists across restarts).
+`%APPDATA%\reflex\config.json` is created on first run:
 
-## Quit
+- `max_results`: rows shown at once (default 8)
+- `index_dirs`: folders to index. Drive roots like `D:\` are indexed less deeply.
 
-Type `quit` in the palette and hit Enter. No tray icon, no config to kill the hotkey - just type quit.
+Launch counts are kept in `%APPDATA%\reflex\launch_counts.json`. Clipboard history stays in memory and is gone when Reflex exits. Nothing is sent over the network.
 
-## Status
+## Notes
 
-v2.1 - core features solid, polished for daily use.
+- If another tool already uses Alt+Space (PowerToys Run, for example), the palette's status line says so.
+- Discord may show its game overlay over the palette because Reflex renders with OpenGL. Turn it off in Discord under Settings > Game Overlay.
 
-## Planned
+## License
 
-- Window management and snap zones
-- Workspace save/restore
-- Plugin SDK (Rust/WASM)
-- Context-aware results per active app
-- Incremental file watching (notify crate)
-- Image clipboard support
-- Customizable hotkey
-- Light theme
-
----
-
-Built by [Tushar Sharma](https://github.com/TxsharDev)
+MIT

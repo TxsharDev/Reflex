@@ -1,4 +1,8 @@
-//! Result ranking - combines fuzzy score, frequency, recency, and type.
+//! Result types shared by every source, and the final ordering.
+
+use std::path::PathBuf;
+
+use crate::actions::system::Command;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -9,7 +13,7 @@ pub struct SearchResult {
     pub action: ResultAction,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultKind {
     App,
     File,
@@ -19,41 +23,26 @@ pub enum ResultKind {
     Action,
 }
 
-impl ResultKind {
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
-        match self {
-            ResultKind::App => "App",
-            ResultKind::File => "File",
-            ResultKind::Folder => "Folder",
-            ResultKind::Clipboard => "Clip",
-            ResultKind::Calculator => "Calc",
-            ResultKind::Action => "Action",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResultAction {
-    Launch(std::path::PathBuf),
-    OpenFile(std::path::PathBuf),
-    OpenFolder(std::path::PathBuf),
-    PasteClip(String),
-    CopyResult(String),
-    SystemAction(String),
+    Launch(PathBuf),
+    Open(PathBuf),
+    Paste(String),
+    Copy(String),
+    Run(Command),
 }
 
-/// Rank and merge results from different sources.
-pub fn rank_results(results: &mut [SearchResult]) {
-    // Apps get a bonus
+/// Sorts best first. Each source scores within its own range; these offsets
+/// decide how sources interleave.
+pub fn rank(results: &mut [SearchResult]) {
     for r in results.iter_mut() {
-        match r.kind {
-            ResultKind::App => r.score = r.score.saturating_add(500),
-            ResultKind::Calculator => r.score = r.score.saturating_add(2000), // calculator always on top if matched
-            ResultKind::Action => r.score = r.score.saturating_add(1000),
-            _ => {}
-        }
+        let boost = match r.kind {
+            ResultKind::Calculator => 2000,
+            ResultKind::Action => 1000,
+            ResultKind::App => 500,
+            _ => 0,
+        };
+        r.score = r.score.saturating_add(boost);
     }
-
-    results.sort_by_key(|b| std::cmp::Reverse(b.score));
+    results.sort_by_key(|r| std::cmp::Reverse(r.score));
 }

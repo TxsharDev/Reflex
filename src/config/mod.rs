@@ -1,37 +1,35 @@
-//! Configuration - persisted to disk as JSON.
+//! Settings and launch counts, stored as JSON in `%APPDATA%\reflex`.
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
-    #[serde(default = "default_max_results")]
+    /// Rows shown at once.
     pub max_results: usize,
-
-    #[serde(default = "default_index_dirs")]
+    /// Folders to index. Drive roots (`D:\`) are indexed shallower.
     pub index_dirs: Vec<String>,
-
-    #[serde(default = "default_theme")]
-    pub theme: String,
 }
 
-fn default_max_results() -> usize { 12 }
-fn default_theme() -> String { "dark".into() }
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_results: 8,
+            index_dirs: default_index_dirs(),
+        }
+    }
+}
 
 fn default_index_dirs() -> Vec<String> {
-    // Index user subdirs (deep) + drive roots (shallow)
     let mut dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        for sub in ["Desktop", "Documents", "Downloads", "Projects", "dev", "code", "repos", "src"] {
-            let p = home.join(sub);
-            if p.exists() { dirs.push(p.to_string_lossy().to_string()); }
-        }
-        // Home itself as a catch-all
-        dirs.push(home.to_string_lossy().to_string());
+        dirs.push(home.to_string_lossy().into_owned());
     }
-    // Add drive roots that exist
-    for letter in b'A'..=b'Z' {
-        let drive = format!("{}:\\", letter as char);
+    for letter in 'A'..='Z' {
+        let drive = format!("{letter}:\\");
         if PathBuf::from(&drive).exists() {
             dirs.push(drive);
         }
@@ -39,45 +37,39 @@ fn default_index_dirs() -> Vec<String> {
     dirs
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            max_results: default_max_results(),
-            index_dirs: default_index_dirs(),
-            theme: default_theme(),
-        }
-    }
-}
-
-/// Path to the launch counts JSON file.
-pub fn launch_counts_path() -> PathBuf {
+fn dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("reflex")
-        .join("launch_counts.json")
 }
 
 impl Config {
-    fn path() -> Option<PathBuf> {
-        Some(dirs::config_dir()?.join("reflex").join("config.json"))
-    }
-
+    /// Loads the config, writing the defaults on first run so there is a file to edit.
     pub fn load() -> Self {
-        let Some(path) = Self::path() else { return Self::default() };
-        match std::fs::read_to_string(&path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => Self::default(),
+        let path = dir().join("config.json");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return serde_json::from_str(&text).unwrap_or_default();
         }
+        let config = Self::default();
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::create_dir_all(dir());
+            let _ = std::fs::write(path, json);
+        }
+        config
     }
+}
 
-    #[allow(dead_code)]
-    pub fn save(&self) {
-        let Some(path) = Self::path() else { return };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, json);
-        }
+/// Launches per app name (lowercase), used to rank apps.
+pub fn load_launch_counts() -> HashMap<String, u32> {
+    std::fs::read_to_string(dir().join("launch_counts.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_launch_counts(counts: &HashMap<String, u32>) {
+    if let Ok(json) = serde_json::to_string(counts) {
+        let _ = std::fs::create_dir_all(dir());
+        let _ = std::fs::write(dir().join("launch_counts.json"), json);
     }
 }

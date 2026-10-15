@@ -1,47 +1,129 @@
-//! Built-in system actions that can be triggered from the command palette.
+//! Built-in commands offered in the palette.
 
-use crate::search::ranker::{SearchResult, ResultKind, ResultAction};
+use crate::search::ranker::{ResultAction, ResultKind, SearchResult};
 
-/// All available system actions.
-pub fn all_actions() -> Vec<SystemAction> {
-    vec![
-        SystemAction { name: "Sleep", keywords: "sleep suspend", action: "sleep" },
-        SystemAction { name: "Shutdown", keywords: "shutdown power off", action: "shutdown" },
-        SystemAction { name: "Restart", keywords: "restart reboot", action: "restart" },
-        SystemAction { name: "Lock", keywords: "lock screen", action: "lock" },
-        SystemAction { name: "Empty Recycle Bin", keywords: "empty trash recycle bin clear", action: "emptybin" },
-        SystemAction { name: "IP Address", keywords: "ip address network", action: "ip" },
-        SystemAction { name: "Open Terminal", keywords: "terminal cmd powershell console", action: "terminal" },
-        SystemAction { name: "Screenshot", keywords: "screenshot snip capture screen", action: "screenshot" },
-        SystemAction { name: "Quit Reflex", keywords: "quit exit close stop", action: "quit" },
-    ]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    Sleep,
+    Lock,
+    Restart,
+    Shutdown,
+    EmptyRecycleBin,
+    CopyIp,
+    Terminal,
+    Screenshot,
+    Quit,
 }
 
-pub struct SystemAction {
-    pub name: &'static str,
-    pub keywords: &'static str,
-    pub action: &'static str,
+impl Command {
+    const ALL: [Command; 9] = [
+        Command::Sleep,
+        Command::Lock,
+        Command::Restart,
+        Command::Shutdown,
+        Command::EmptyRecycleBin,
+        Command::CopyIp,
+        Command::Terminal,
+        Command::Screenshot,
+        Command::Quit,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Command::Sleep => "Sleep",
+            Command::Lock => "Lock",
+            Command::Restart => "Restart",
+            Command::Shutdown => "Shut down",
+            Command::EmptyRecycleBin => "Empty Recycle Bin",
+            Command::CopyIp => "Copy IP address",
+            Command::Terminal => "Open terminal",
+            Command::Screenshot => "Screenshot",
+            Command::Quit => "Quit Reflex",
+        }
+    }
+
+    fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Command::Sleep => &["sleep", "suspend"],
+            Command::Lock => &["lock"],
+            Command::Restart => &["restart", "reboot"],
+            Command::Shutdown => &["shutdown", "shut", "power", "off"],
+            Command::EmptyRecycleBin => &["empty", "recycle", "bin", "trash"],
+            Command::CopyIp => &["ip", "address", "network"],
+            Command::Terminal => &["terminal", "cmd", "console", "shell", "powershell"],
+            Command::Screenshot => &["screenshot", "snip", "capture"],
+            Command::Quit => &["quit", "exit", "reflex"],
+        }
+    }
+
+    /// Commands that end the session need a second Enter.
+    pub fn needs_confirmation(self) -> bool {
+        matches!(self, Command::Restart | Command::Shutdown)
+    }
 }
 
-/// Search system actions.
-pub fn search_actions(query: &str) -> Vec<SearchResult> {
-    let q = query.to_lowercase();
-    let actions = all_actions();
+/// Commands whose title or a keyword starts with every word of the query.
+pub fn search(query: &str) -> Vec<SearchResult> {
+    let query = query.to_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
 
-    actions
-        .iter()
-        .filter(|a| {
-            a.name.to_lowercase().contains(&q) || a.keywords.contains(&q)
-        })
-        .map(|a| {
-            let score = if a.name.to_lowercase().starts_with(&q) { 3000 } else { 2000 };
-            SearchResult {
-                title: a.name.to_string(),
-                subtitle: "System action".to_string(),
+    Command::ALL
+        .into_iter()
+        .filter_map(|command| {
+            let title = command.title().to_lowercase();
+            let prefixes = || {
+                title
+                    .split_whitespace()
+                    .chain(command.keywords().iter().copied())
+            };
+            if !words.iter().all(|w| prefixes().any(|p| p.starts_with(w))) {
+                return None;
+            }
+            let score = if title.starts_with(&query) {
+                3000
+            } else {
+                2000
+            };
+            Some(SearchResult {
+                title: command.title().to_string(),
+                subtitle: String::new(),
                 kind: ResultKind::Action,
                 score,
-                action: ResultAction::SystemAction(a.action.to_string()),
-            }
+                action: ResultAction::Run(command),
+            })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titles(query: &str) -> Vec<String> {
+        search(query).into_iter().map(|r| r.title).collect()
+    }
+
+    #[test]
+    fn matches_title_and_keyword_prefixes() {
+        assert_eq!(titles("reboot"), ["Restart"]);
+        assert_eq!(titles("shut"), ["Shut down"]);
+        assert!(titles("trash").contains(&"Empty Recycle Bin".to_string()));
+    }
+
+    #[test]
+    fn single_letters_inside_words_do_not_match() {
+        assert!(!titles("p").contains(&"Sleep".to_string()));
+    }
+
+    #[test]
+    fn only_restart_and_shutdown_need_confirmation() {
+        let confirmed: Vec<_> = Command::ALL
+            .into_iter()
+            .filter(|c| c.needs_confirmation())
+            .collect();
+        assert_eq!(confirmed, [Command::Restart, Command::Shutdown]);
+    }
 }

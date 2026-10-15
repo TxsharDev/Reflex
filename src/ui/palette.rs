@@ -1,8 +1,11 @@
-//! Command palette — Lumen Night Foundry.
+//! The palette window: search field, filter tabs, result rows, status line.
 
-use eframe::egui;
-use crate::search::ranker::{SearchResult, ResultKind, ResultAction};
+use eframe::egui::{self, Color32, FontFamily, FontId, Key, Modifiers, Sense};
+
+use crate::search::ranker::{ResultAction, ResultKind, SearchResult};
 use crate::ui::theme;
+
+const ROW_HEIGHT: f32 = 44.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
@@ -14,7 +17,15 @@ pub enum Filter {
 }
 
 impl Filter {
-    pub fn label(self) -> &'static str {
+    const ORDER: [Filter; 5] = [
+        Filter::All,
+        Filter::Apps,
+        Filter::Files,
+        Filter::Clipboard,
+        Filter::Actions,
+    ];
+
+    fn label(self) -> &'static str {
         match self {
             Filter::All => "all",
             Filter::Apps => "apps",
@@ -24,365 +35,473 @@ impl Filter {
         }
     }
 
-    pub fn matches(self, kind: &ResultKind) -> bool {
+    fn matches(self, kind: ResultKind) -> bool {
         match self {
             Filter::All => true,
-            Filter::Apps => *kind == ResultKind::App,
-            Filter::Files => *kind == ResultKind::File || *kind == ResultKind::Folder,
-            Filter::Clipboard => *kind == ResultKind::Clipboard,
-            Filter::Actions => *kind == ResultKind::Action || *kind == ResultKind::Calculator,
+            Filter::Apps => kind == ResultKind::App,
+            Filter::Files => matches!(kind, ResultKind::File | ResultKind::Folder),
+            Filter::Clipboard => kind == ResultKind::Clipboard,
+            Filter::Actions => matches!(kind, ResultKind::Action | ResultKind::Calculator),
         }
     }
+
+    fn step(self, forward: bool) -> Filter {
+        let i = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
+        let n = Self::ORDER.len();
+        Self::ORDER[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+}
+
+pub enum Event {
+    /// Run an action. `alternate` is true for Ctrl+Enter / Ctrl+click.
+    Execute {
+        action: ResultAction,
+        alternate: bool,
+    },
+    Dismiss,
+}
+
+/// Facts shown in the status line.
+pub struct Status {
+    pub files: usize,
+    pub indexing: bool,
+    pub hotkey_ok: bool,
 }
 
 pub struct PaletteState {
     pub query: String,
-    pub results: Vec<SearchResult>,
-    pub selected: usize,
     pub visible: bool,
-    pub filter: Filter,
     pub alpha: f32,
+    /// Action waiting for a second Enter before it runs.
+    pub armed: Option<ResultAction>,
+    results: Vec<SearchResult>,
+    selected: usize,
+    filter: Filter,
 }
 
 impl PaletteState {
     pub fn new() -> Self {
-        Self { query: String::new(), results: Vec::new(), selected: 0, visible: false, filter: Filter::All, alpha: 0.0 }
+        Self {
+            query: String::new(),
+            visible: false,
+            alpha: 0.0,
+            armed: None,
+            results: Vec::new(),
+            selected: 0,
+            filter: Filter::All,
+        }
     }
 
-    pub fn show(&mut self) {
+    pub fn open(&mut self) {
         self.visible = true;
         self.query.clear();
         self.results.clear();
         self.selected = 0;
         self.filter = Filter::All;
+        self.armed = None;
     }
 
-    pub fn hide(&mut self) {
-        self.visible = false;
-    }
-
-    /// Animate alpha toward 1.0 (visible) or 0.0 (hidden). ~120ms fade.
-    pub fn tick_alpha(&mut self) {
-        let target = if self.visible { 1.0 } else { 0.0 };
-        let speed = 0.18;
-        if self.alpha < target {
-            self.alpha = (self.alpha + speed).min(target);
-        } else if self.alpha > target {
-            self.alpha = (self.alpha - speed).max(target);
+    /// Replaces the results. A new query resets the selection; a background
+    /// refresh (new files or clips) keeps it.
+    pub fn set_results(&mut self, results: Vec<SearchResult>, new_query: bool) {
+        self.results = results;
+        if new_query {
+            self.selected = 0;
+            self.armed = None;
         }
     }
 
-    pub fn move_up(&mut self) {
-        if self.selected > 0 { self.selected -= 1; }
+    fn shown(&self, max_rows: usize) -> Vec<&SearchResult> {
+        self.results
+            .iter()
+            .filter(|r| self.filter.matches(r.kind))
+            .take(max_rows)
+            .collect()
     }
 
-    pub fn move_down(&mut self) {
-        let count = self.filtered_results().len();
-        if self.selected + 1 < count { self.selected += 1; }
-    }
-
-    pub fn filtered_results(&self) -> Vec<&SearchResult> {
-        self.results.iter().filter(|r| self.filter.matches(&r.kind)).collect()
-    }
-
-    pub fn selected_action(&self) -> Option<ResultAction> {
-        let filtered = self.filtered_results();
-        filtered.get(self.selected).map(|r| r.action.clone())
-    }
-
-    pub fn ideal_height(&self) -> f32 {
-        let input_h = 56.0;
-        let filter_h = 32.0;
-        let divider = 1.0;
-        let result_h = 48.0;
-        let footer_h = 28.0;
-        let filtered = self.filtered_results().len();
-        let visible = 8.min(filtered);
-
-        if filtered == 0 && self.query.is_empty() {
-            input_h + filter_h + footer_h
-        } else if filtered == 0 {
-            input_h + filter_h + divider + 40.0 + footer_h
-        } else {
-            input_h + filter_h + divider + (visible as f32 * result_h) + footer_h + 4.0
+    fn select(&mut self, index: usize) {
+        if index != self.selected {
+            self.selected = index;
+            self.armed = None;
         }
+    }
+
+    fn set_filter(&mut self, filter: Filter) {
+        self.filter = filter;
+        self.selected = 0;
+        self.armed = None;
     }
 }
 
-pub fn draw(ctx: &egui::Context, state: &mut PaletteState, _ctrl_held: bool, file_count: usize, indexing: bool) -> Option<ResultAction> {
-    if !state.visible && state.alpha < 0.01 { return None; }
+/// Draws the palette and returns what the user asked for, plus the height
+/// the content needs so the window can be sized to fit.
+pub fn draw(
+    ctx: &egui::Context,
+    state: &mut PaletteState,
+    status: &Status,
+    max_rows: usize,
+) -> (Option<Event>, f32) {
+    let mut event = handle_keys(ctx, state, max_rows);
+    let a = state.alpha;
+    let ctrl = ctx.input(|i| i.modifiers.ctrl);
+    let mut height = 0.0;
 
-    let alpha = state.alpha;
-    let mut executed_action = None;
+    let panel = egui::Frame::NONE
+        .fill(theme::BG.gamma_multiply(a))
+        .corner_radius(12)
+        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER.gamma_multiply(a)));
 
-    let bg = with_alpha(theme::BG, alpha);
-    let border = with_alpha(theme::BORDER, alpha);
+    egui::CentralPanel::default().frame(panel).show(ctx, |ui| {
+        // Dragging any empty part of the palette moves the window.
+        let background = ui.interact(ui.max_rect(), ui.id().with("drag"), Sense::drag());
+        if background.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
 
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::NONE
-                .fill(bg)
-                .corner_radius(egui::CornerRadius::same(12))
-                .stroke(egui::Stroke::new(1.0_f32, border))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 4],
-                    blur: 24,
-                    spread: 2,
-                    color: egui::Color32::from_black_alpha((60.0 * alpha) as u8),
-                })
-        )
-        .show(ctx, |ui| {
-            let w = ui.available_width();
+        let w = ui.available_width();
+        // The panel always spans the whole window, so measure the content
+        // in its own scope rather than the panel.
+        height = ui
+            .scope(|ui| {
+                search_field(ui, state, w, a);
+                filter_tabs(ui, state, w, a);
+                divider(ui, w, a);
 
-            // === Search input ===
-            egui::Frame::NONE
-                .fill(with_alpha(theme::INPUT_BG, alpha))
-                .corner_radius(egui::CornerRadius { nw: 12, ne: 12, sw: 0, se: 0 })
-                .inner_margin(egui::Margin { left: 18, right: 18, top: 14, bottom: 14 })
-                .show(ui, |ui| {
-                    ui.set_width(w);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut state.query)
-                            .font(egui::FontId::new(20.0, egui::FontFamily::Proportional))
-                            .text_color(with_alpha(theme::TEXT, alpha))
-                            .hint_text(egui::RichText::new("search...").color(with_alpha(theme::DIM, alpha)).size(20.0))
-                            .frame(false)
-                            .desired_width(w - 36.0)
-                            .return_key(None)
-                    );
-                    response.request_focus();
-                });
+                let shown: Vec<SearchResult> = state.shown(max_rows).into_iter().cloned().collect();
+                if state.selected >= shown.len() {
+                    state.selected = shown.len().saturating_sub(1);
+                }
 
-            // === Filter tabs (lowercase, subtle) ===
-            egui::Frame::NONE
-                .inner_margin(egui::Margin { left: 14, right: 14, top: 5, bottom: 5 })
-                .show(ui, |ui| {
-                    ui.set_width(w);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        for filter in [Filter::All, Filter::Apps, Filter::Files, Filter::Clipboard, Filter::Actions] {
-                            let active = state.filter == filter;
-                            let text = egui::RichText::new(filter.label())
-                                .size(11.0)
-                                .family(egui::FontFamily::Monospace)
-                                .color(if active { with_alpha(theme::ACCENT, alpha) } else { with_alpha(theme::DIM, alpha) });
-
-                            let btn = ui.add(
-                                egui::Button::new(text)
-                                    .fill(if active { with_alpha(theme::ACCENT.gamma_multiply(0.08), alpha) } else { egui::Color32::TRANSPARENT })
-                                    .corner_radius(egui::CornerRadius::same(4))
-                                    .stroke(if active { egui::Stroke::new(0.5_f32, with_alpha(theme::ACCENT.gamma_multiply(0.3), alpha)) } else { egui::Stroke::new(0.0_f32, egui::Color32::TRANSPARENT) })
+                if shown.is_empty() {
+                    let message = if state.query.trim().is_empty() {
+                        "apps, files, clipboard, math, commands"
+                    } else {
+                        "no results"
+                    };
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::symmetric(18, 12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(message)
+                                    .size(13.0)
+                                    .color(theme::DIM.gamma_multiply(a)),
                             );
-                            if btn.clicked() {
-                                state.filter = filter;
-                                state.selected = 0;
-                            }
-                        }
-                    });
-                });
-
-            // Hairline divider
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, with_alpha(theme::BORDER, alpha));
-
-            // === Keyboard ===
-            let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-            let ctrl_enter = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter));
-
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { state.hide(); }
-            if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) { state.move_up(); }
-            if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) { state.move_down(); }
-            if (enter_pressed || ctrl_enter)
-                && let Some(action) = state.selected_action()
-            {
-                executed_action = Some(action);
-            }
-            if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
-                state.filter = match state.filter {
-                    Filter::All => Filter::Apps,
-                    Filter::Apps => Filter::Files,
-                    Filter::Files => Filter::Clipboard,
-                    Filter::Clipboard => Filter::Actions,
-                    Filter::Actions => Filter::All,
-                };
-                state.selected = 0;
-            }
-
-            // === Results ===
-            let filtered: Vec<SearchResult> = state.filtered_results().into_iter().cloned().collect();
-
-            if !filtered.is_empty() {
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 4 })
-                    .show(ui, |ui| {
-                        let max = 8.min(filtered.len());
-                        #[allow(clippy::needless_range_loop)]
-                        for i in 0..max {
-                            let r = &filtered[i];
-                            let selected = i == state.selected;
-
-                            let response = ui.add_sized(
-                                [w - 12.0, 44.0],
-                                ResultRow { result: r, selected, alpha },
-                            );
-
-                            if response.clicked() {
-                                executed_action = Some(filtered[i].action.clone());
-                            }
-                            if response.hovered() {
-                                state.selected = i;
-                            }
-                        }
-                    });
-            } else if !state.query.is_empty() {
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin { left: 18, right: 18, top: 12, bottom: 12 })
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("no results").size(13.0).color(with_alpha(theme::DIM, alpha)));
-                    });
-            }
-
-            // === Footer (hairline top, mono) ===
-            let (footer_rect, _) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::hover());
-            if ui.is_rect_visible(footer_rect) {
-                let p = ui.painter();
-                p.line_segment(
-                    [egui::pos2(footer_rect.left() + 10.0, footer_rect.top()),
-                     egui::pos2(footer_rect.right() - 10.0, footer_rect.top())],
-                    egui::Stroke::new(0.5_f32, with_alpha(theme::BORDER, alpha)),
-                );
-
-                let status = if indexing {
-                    format!("indexing · {} files", file_count)
+                        });
                 } else {
-                    format!("{} files", file_count)
-                };
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::same(6))
+                        .show(ui, |ui| {
+                            let pointer_moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+                            for (i, result) in shown.iter().enumerate() {
+                                let row = Row {
+                                    result,
+                                    selected: i == state.selected,
+                                    armed: state.armed.as_ref() == Some(&result.action),
+                                    alpha: a,
+                                };
+                                let response = ui.add_sized([w - 12.0, ROW_HEIGHT], row);
+                                if response.hovered() && pointer_moved {
+                                    state.select(i);
+                                }
+                                if response.clicked() {
+                                    state.select(i);
+                                    event = Some(Event::Execute {
+                                        action: result.action.clone(),
+                                        alternate: ctrl,
+                                    });
+                                }
+                            }
+                        });
+                }
 
-                p.text(
-                    egui::pos2(footer_rect.left() + 12.0, footer_rect.center().y + 1.0),
-                    egui::Align2::LEFT_CENTER,
-                    "reflex",
-                    egui::FontId::new(9.0, egui::FontFamily::Monospace),
-                    with_alpha(theme::ACCENT_DIM, alpha),
-                );
-                p.text(
-                    egui::pos2(footer_rect.right() - 12.0, footer_rect.center().y + 1.0),
-                    egui::Align2::RIGHT_CENTER,
-                    status,
-                    egui::FontId::new(9.0, egui::FontFamily::Monospace),
-                    with_alpha(theme::DIM, alpha),
-                );
-            }
-        });
+                footer(ui, status, w, a);
+            })
+            .response
+            .rect
+            .height();
+    });
 
-    executed_action
+    (event, height)
 }
 
-// Result row widget
-struct ResultRow<'a> {
+/// Keys are consumed before the text field sees them, so arrows and Tab
+/// drive the list instead of moving the cursor or focus.
+fn handle_keys(ctx: &egui::Context, state: &mut PaletteState, max_rows: usize) -> Option<Event> {
+    let shown = state.shown(max_rows).len();
+    let (escape, up, down, tab, back_tab, ctrl_enter, enter) = ctx.input_mut(|i| {
+        (
+            i.consume_key(Modifiers::NONE, Key::Escape),
+            i.consume_key(Modifiers::NONE, Key::ArrowUp),
+            i.consume_key(Modifiers::NONE, Key::ArrowDown),
+            i.consume_key(Modifiers::NONE, Key::Tab),
+            i.consume_key(Modifiers::SHIFT, Key::Tab),
+            i.consume_key(Modifiers::CTRL, Key::Enter),
+            i.consume_key(Modifiers::NONE, Key::Enter),
+        )
+    });
+
+    if escape {
+        return Some(Event::Dismiss);
+    }
+    if up && state.selected > 0 {
+        state.select(state.selected - 1);
+    }
+    if down && state.selected + 1 < shown {
+        state.select(state.selected + 1);
+    }
+    if tab || back_tab {
+        state.set_filter(state.filter.step(tab));
+    }
+    if enter || ctrl_enter {
+        let action = state
+            .shown(max_rows)
+            .get(state.selected)
+            .map(|r| r.action.clone())?;
+        return Some(Event::Execute {
+            action,
+            alternate: ctrl_enter,
+        });
+    }
+    None
+}
+
+fn search_field(ui: &mut egui::Ui, state: &mut PaletteState, w: f32, a: f32) {
+    egui::Frame::NONE
+        .fill(theme::INPUT_BG.gamma_multiply(a))
+        .corner_radius(egui::CornerRadius {
+            nw: 12,
+            ne: 12,
+            sw: 0,
+            se: 0,
+        })
+        .inner_margin(egui::Margin::symmetric(18, 14))
+        .show(ui, |ui| {
+            ui.set_width(w - 36.0);
+            let field = egui::TextEdit::singleline(&mut state.query)
+                .font(FontId::proportional(20.0))
+                .text_color(theme::TEXT.gamma_multiply(a))
+                .hint_text(
+                    egui::RichText::new("Search")
+                        .color(theme::DIM.gamma_multiply(a))
+                        .size(20.0),
+                )
+                .frame(false)
+                .desired_width(w - 36.0)
+                .return_key(None);
+            ui.add(field).request_focus();
+        });
+}
+
+fn filter_tabs(ui: &mut egui::Ui, state: &mut PaletteState, w: f32, a: f32) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(14, 5))
+        .show(ui, |ui| {
+            ui.set_width(w - 28.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for filter in Filter::ORDER {
+                    let active = state.filter == filter;
+                    let color = if active { theme::ACCENT } else { theme::DIM };
+                    let label = egui::RichText::new(filter.label())
+                        .size(11.0)
+                        .family(FontFamily::Monospace)
+                        .color(color.gamma_multiply(a));
+                    let button = egui::Button::new(label)
+                        .corner_radius(4)
+                        .fill(if active {
+                            theme::ACCENT.gamma_multiply(0.08 * a)
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .stroke(if active {
+                            egui::Stroke::new(0.5_f32, theme::ACCENT.gamma_multiply(0.3 * a))
+                        } else {
+                            egui::Stroke::NONE
+                        });
+                    if ui.add(button).clicked() {
+                        state.set_filter(filter);
+                    }
+                }
+            });
+        });
+}
+
+fn divider(ui: &mut egui::Ui, w: f32, a: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0.0, theme::BORDER.gamma_multiply(a));
+}
+
+fn footer(ui: &mut egui::Ui, status: &Status, w: f32, a: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::hover());
+    let painter = ui.painter();
+    let font = FontId::monospace(9.0);
+    painter.line_segment(
+        [
+            rect.left_top() + egui::vec2(10.0, 0.0),
+            rect.right_top() - egui::vec2(10.0, 0.0),
+        ],
+        egui::Stroke::new(0.5_f32, theme::BORDER.gamma_multiply(a)),
+    );
+
+    let (left, left_color) = if status.hotkey_ok {
+        ("reflex".to_string(), theme::ACCENT_DIM)
+    } else {
+        ("alt+space is taken by another app".to_string(), theme::RED)
+    };
+    painter.text(
+        egui::pos2(rect.left() + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        left,
+        font.clone(),
+        left_color.gamma_multiply(a),
+    );
+
+    let files = if status.indexing {
+        format!("indexing · {} files", status.files)
+    } else {
+        format!("{} files", status.files)
+    };
+    painter.text(
+        egui::pos2(rect.right() - 12.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        files,
+        font,
+        theme::DIM.gamma_multiply(a),
+    );
+}
+
+struct Row<'a> {
     result: &'a SearchResult,
     selected: bool,
+    armed: bool,
     alpha: f32,
 }
 
-impl<'a> egui::Widget for ResultRow<'a> {
+impl Row<'_> {
+    fn hint(&self) -> &'static str {
+        if self.armed {
+            return "enter again to confirm";
+        }
+        match self.result.kind {
+            ResultKind::App => "enter open · ctrl+enter admin",
+            ResultKind::File | ResultKind::Folder => "enter open · ctrl+enter show in folder",
+            ResultKind::Clipboard => "enter paste · ctrl+enter copy",
+            ResultKind::Calculator => "enter copy",
+            ResultKind::Action => "enter run",
+        }
+    }
+
+    fn badge(&self) -> String {
+        match (&self.result.kind, &self.result.action) {
+            (ResultKind::File, ResultAction::Open(path)) => path
+                .extension()
+                .map(|e| e.to_string_lossy().to_uppercase())
+                .filter(|e| e.len() <= 4)
+                .unwrap_or_else(|| "FILE".into()),
+            (ResultKind::App, _) => "APP".into(),
+            (ResultKind::Folder, _) => "DIR".into(),
+            (ResultKind::Clipboard, _) => "CLIP".into(),
+            (ResultKind::Calculator, _) => "CALC".into(),
+            _ => "CMD".into(),
+        }
+    }
+}
+
+impl egui::Widget for Row<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let desired_size = ui.available_size_before_wrap();
-        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return response;
+        }
+        let a = self.alpha;
+        let painter = ui.painter();
 
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter();
+        if self.selected {
+            painter.rect_filled(rect, 8, theme::SELECTED.gamma_multiply(a));
+        } else if response.hovered() {
+            painter.rect_filled(rect, 8, theme::HOVER.gamma_multiply(a));
+        }
 
-            // Background — subtle, no heavy fills
-            if self.selected {
-                painter.rect_filled(rect, egui::CornerRadius::same(8), with_alpha(theme::SELECTED, self.alpha));
-            } else if response.hovered() {
-                painter.rect_filled(rect, egui::CornerRadius::same(8), with_alpha(theme::HOVER, self.alpha));
-            }
+        let dot = match self.result.kind {
+            ResultKind::App => theme::GREEN,
+            ResultKind::File => theme::BLUE,
+            ResultKind::Folder => theme::YELLOW,
+            ResultKind::Clipboard => theme::PURPLE,
+            ResultKind::Calculator => theme::ACCENT,
+            ResultKind::Action => theme::RED,
+        };
+        let left = rect.left() + 12.0;
+        painter.circle_filled(
+            egui::pos2(left + 4.0, rect.center().y),
+            3.5,
+            dot.gamma_multiply(a),
+        );
 
-            let left = rect.left() + 12.0;
-            let mid_y = rect.center().y;
+        // Right side first, so the text knows how much room it has.
+        let (right_text, right_color) = if self.selected {
+            (
+                self.hint().to_string(),
+                if self.armed { theme::RED } else { theme::DIM },
+            )
+        } else {
+            (self.badge(), theme::DIM)
+        };
+        let right = painter.text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            right_text,
+            FontId::monospace(9.0),
+            right_color.gamma_multiply(a),
+        );
 
-            // Colour dot (small, precise)
-            let dot_color = match self.result.kind {
-                ResultKind::App => theme::GREEN,
-                ResultKind::File => theme::ACCENT_BLUE,
-                ResultKind::Folder => theme::YELLOW,
-                ResultKind::Clipboard => theme::PURPLE,
-                ResultKind::Calculator => theme::ACCENT,
-                ResultKind::Action => theme::RED,
-            };
-            painter.circle_filled(egui::pos2(left + 4.0, mid_y), 3.5, with_alpha(dot_color, self.alpha));
-
-            // Title (lowercase feel, 13.5px)
-            let title_pos = egui::pos2(left + 18.0, mid_y - 9.0);
-            painter.text(
-                title_pos,
-                egui::Align2::LEFT_TOP,
-                &self.result.title,
-                egui::FontId::new(13.5, egui::FontFamily::Proportional),
-                with_alpha(theme::TEXT, self.alpha),
+        let text_left = left + 18.0;
+        let text_width = (right.left() - 16.0 - text_left).max(0.0);
+        let has_subtitle = !self.result.subtitle.is_empty();
+        let title_y = if has_subtitle {
+            rect.center().y - 9.0
+        } else {
+            rect.center().y - 8.5
+        };
+        single_line(
+            ui,
+            egui::pos2(text_left, title_y),
+            &self.result.title,
+            FontId::proportional(13.5),
+            theme::TEXT.gamma_multiply(a),
+            text_width,
+        );
+        if has_subtitle {
+            single_line(
+                ui,
+                egui::pos2(text_left, rect.center().y + 5.0),
+                &self.result.subtitle,
+                FontId::proportional(11.0),
+                theme::DIM.gamma_multiply(a),
+                text_width,
             );
-
-            // Subtitle (dim, 11px)
-            if !self.result.subtitle.is_empty() {
-                let sub: String = self.result.subtitle.chars().take(60).collect();
-                painter.text(
-                    egui::pos2(left + 18.0, mid_y + 5.0),
-                    egui::Align2::LEFT_TOP,
-                    sub,
-                    egui::FontId::new(11.0, egui::FontFamily::Proportional),
-                    with_alpha(theme::DIM, self.alpha),
-                );
-            }
-
-            // Right side — UPPERCASE mono badge or keyboard hint
-            let right_x = rect.right() - 12.0;
-
-            if self.selected {
-                let hint = match self.result.kind {
-                    ResultKind::App => "enter · ctrl+enter admin",
-                    ResultKind::File => "enter · ctrl+enter folder",
-                    ResultKind::Clipboard => "enter · paste",
-                    ResultKind::Calculator => "enter · copy",
-                    ResultKind::Action => "enter · run",
-                    ResultKind::Folder => "enter · open",
-                };
-                painter.text(
-                    egui::pos2(right_x, mid_y),
-                    egui::Align2::RIGHT_CENTER,
-                    hint,
-                    egui::FontId::new(9.0, egui::FontFamily::Monospace),
-                    with_alpha(theme::DIM, self.alpha),
-                );
-            } else {
-                let badge = match self.result.kind {
-                    ResultKind::App => "app",
-                    ResultKind::File => {
-                        let ext = self.result.subtitle.rsplit('.').next().unwrap_or("file");
-                        if ext.len() <= 4 { ext } else { "file" }
-                    }
-                    ResultKind::Folder => "dir",
-                    ResultKind::Clipboard => "clip",
-                    ResultKind::Calculator => "calc",
-                    ResultKind::Action => "cmd",
-                };
-                painter.text(
-                    egui::pos2(right_x, mid_y),
-                    egui::Align2::RIGHT_CENTER,
-                    badge.to_uppercase(),
-                    egui::FontId::new(9.0, egui::FontFamily::Monospace),
-                    with_alpha(theme::DIM, self.alpha),
-                );
-            }
         }
 
         response
     }
 }
 
-/// Multiply a color's alpha channel by a factor (for fade in/out).
-fn with_alpha(color: egui::Color32, factor: f32) -> egui::Color32 {
-    let [r, g, b, a] = color.to_array();
-    egui::Color32::from_rgba_premultiplied(r, g, b, (a as f32 * factor) as u8)
+/// Paints `text` on one line, cut with an ellipsis if it is wider than `max_width`.
+fn single_line(
+    ui: &egui::Ui,
+    pos: egui::Pos2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+    let galley = ui.fonts(|f| f.layout_job(job));
+    ui.painter().galley(pos, galley, color);
 }

@@ -2,6 +2,29 @@
 
 All notable changes to Reflex will be documented here.
 
+## [2.2.0] - 2026-10-15
+
+### Fixed
+- Crash on startup when Cascadia Mono is installed (font fallback named an unregistered font); Segoe UI never loaded due to a filename typo
+- Closing the palette left focus on an invisible window; focus now returns to the previous app
+- Clipboard "paste" only copied; it now pastes into the previous window
+- Clipboard history recorded content marked private by password managers
+- Files under home were indexed twice, and the rest of C:\ was never indexed
+- Shut down and restart ran on a single Enter
+- Admin launch broke on paths containing apostrophes
+- Filter tabs showed only results that survived an early cut, so Files was often empty
+- Calculator showed `NaN` / `inf` and copied labels along with values
+- Window repainted 33 times a second while hidden
+- Dragging moved the window for one frame only
+
+### Changed
+- Apps come from the Start menu app list, so Store apps (Calculator, Settings) are found
+- File index stores folder paths once and names in flat buffers: about a quarter of the memory
+- Clipboard watcher polls the sequence number instead of opening the clipboard
+- Window sizes to its content and opens on the monitor under the cursor
+- Second launch exits instead of starting a duplicate
+- Removed unused dependencies (`notify`, `walkdir`, `open`) and dead code
+
 ## [2.1.0] - 2026-08-21
 
 ### Added

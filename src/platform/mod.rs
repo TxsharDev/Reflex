@@ -1,11 +1,6 @@
-#[cfg(target_os = "windows")]
-pub mod windows;
+#[cfg(not(windows))]
+compile_error!("Reflex targets Windows only.");
 
-#[cfg(target_os = "windows")]
+mod windows;
+
 pub use self::windows::*;
-
-#[cfg(not(target_os = "windows"))]
-pub mod stub;
-
-#[cfg(not(target_os = "windows"))]
-pub use stub::*;
